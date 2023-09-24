@@ -4,20 +4,22 @@ FROM --platform=linux/amd64 rust:alpine as builder
 RUN rustup target add x86_64-unknown-linux-musl
 
 RUN apk update
-RUN apk add --no-cache mold musl-dev
+RUN apk add --no-cache mold musl-dev musl clang
 
 WORKDIR /app
 COPY Cargo.toml Cargo.toml
 COPY Cargo.lock Cargo.lock
+COPY .cargo/config.toml .cargo/config.toml
 
 COPY fake.rs src/main.rs
-RUN cargo build --release --target=x86_64-unknown-linux-musl
+RUN cargo fetch --target=x86_64-unknown-linux-musl
+RUN RUSTFLAGS="--cfg tokio_unstable" cargo build --release --target=x86_64-unknown-linux-musl
 
-#RUN rm -rf ./src
 COPY src src
 RUN touch src/main.rs
-RUN cargo build --release --target=x86_64-unknown-linux-musl
+RUN RUSTFLAGS="--cfg tokio_unstable" cargo build --release --target=x86_64-unknown-linux-musl
 
+#ENTRYPOINT ["tail", "-f", "/dev/null"]
 
 FROM --platform=linux/amd64 scratch
 

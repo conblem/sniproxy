@@ -1,24 +1,30 @@
 use crate::http::loop_http;
+use crate::shutdown::{ShutdownReceiver, ShutdownTask};
 use crate::tls::loop_https;
+use crate::upstream::UpstreamConnector;
+use anyhow::Error;
 use clap::Parser;
-use fast_socks5::client::{Config as SocksConfig, Socks5Stream};
-use std::error::Error;
-use std::net::Ipv4Addr;
-use std::sync::Arc;
-use tokio::net::TcpStream;
-use tokio::runtime::Runtime;
-use tokio::signal::unix;
-use tokio::signal::unix::SignalKind;
-use tokio::sync::watch::channel;
-use tracing::{info, info_span, Instrument};
-use tracing_attributes::instrument;
-use tracing_subscriber::filter::LevelFilter;
+use std::net::IpAddr;
+use tokio::runtime::{Handle, Runtime};
+use tracing::{info, info_span, Instrument, Level};
+use tracing_subscriber::fmt::writer::MakeWriterExt;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use trust_dns_resolver::TokioAsyncResolver;
 use url::Url;
 
+#[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 mod http;
+mod shutdown;
 mod tls;
+mod upstream;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -34,34 +40,28 @@ struct Args {
     http_port: u16,
 
     #[arg(long, default_value = "0.0.0.0")]
-    listen: String,
+    listen: IpAddr,
+
+    #[arg(long)]
+    console_listen: Option<IpAddr>,
+
+    #[arg(long, default_value = "6669")]
+    console_port: u16,
 }
 
-fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+fn main() -> Result<(), Error> {
     let args = &*Box::leak(Box::new(Args::parse()));
-
     let rt = Runtime::new()?;
-    tracing_subscriber::fmt::fmt()
-        .with_max_level(LevelFilter::INFO)
-        .init();
+    init_tracing(args);
 
-    info_span!("main");
+    let _span = info_span!("main").entered();
     info!("Starting up");
+
+    let shutdown = init_shutdown(rt.handle())?;
 
     let resolver =
         TokioAsyncResolver::tokio(ResolverConfig::cloudflare_tls(), ResolverOpts::default());
     let upstream_connector = UpstreamConnector::new(resolver, args);
-
-    let (sender, shutdown) = channel(());
-    rt.spawn(
-        async move {
-            let mut signal = unix::signal(SignalKind::terminate()).unwrap();
-            signal.recv().await;
-            info!("Ctrl C received");
-            sender.send(()).unwrap();
-        }
-        .instrument(info_span!("shutdown")),
-    );
 
     rt.block_on(
         async move {
@@ -78,77 +78,35 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     )
 }
 
-#[derive(Clone)]
-struct UpstreamConnector {
-    resolver: Arc<TokioAsyncResolver>,
-    args: &'static Args,
-}
+#[cfg(feature = "console")]
+fn init_tracing(args: &Args) {
+    let writer = std::io::stdout.with_max_level(Level::INFO);
+    let fmt_layer = tracing_subscriber::fmt::layer().with_writer(writer);
+    let registry = tracing_subscriber::registry().with(fmt_layer);
+    if let Some(console_listen) = args.console_listen {
+        let console_layer = console_subscriber::ConsoleLayer::builder()
+            .server_addr((console_listen, args.console_port))
+            .spawn();
 
-impl UpstreamConnector {
-    fn new(upstream_connector: TokioAsyncResolver, args: &'static Args) -> Self {
-        Self {
-            resolver: Arc::new(upstream_connector),
-            args,
-        }
+        registry.with(console_layer).init();
+    } else {
+        registry.init();
     }
 }
 
-impl UpstreamConnector {
-    #[instrument(skip_all, fields(port = port), err)]
-    async fn connect(
-        &self,
-        sni: &str,
-        port: u16,
-    ) -> Result<TcpStream, Box<dyn Error + Send + Sync>> {
-        match self.args.socks {
-            Some(ref socks) => self.upstream_socks(sni, port, socks).await,
-            None => self.upstream_direct(sni, port).await,
-        }
-    }
+#[cfg(not(feature = "console"))]
+fn init_tracing(args: &Args) {
+    let writer = std::io::stdout.with_max_level(Level::INFO);
+    let fmt_layer = tracing_subscriber::fmt::layer().with_writer(writer);
+    tracing_subscriber::registry().with(fmt_layer).init();
+}
 
-    #[instrument(skip_all, err)]
-    async fn upstream_direct(
-        &self,
-        sni: &str,
-        port: u16,
-    ) -> Result<TcpStream, Box<dyn Error + Send + Sync>> {
-        let target = self.lookup_ip(sni).await?;
+fn init_shutdown(handle: &Handle) -> Result<ShutdownReceiver, Error> {
+    let (shtudown_task, shutdown) = ShutdownTask::new();
+    tokio::task::Builder::new().name("shutdown").spawn_on(
+        shtudown_task.wait().instrument(info_span!("shutdown")),
+        handle,
+    )?;
 
-        Ok(TcpStream::connect((target, port)).await?)
-    }
-
-    #[instrument(skip_all, fields(socks = %socks), err)]
-    async fn upstream_socks(
-        &self,
-        sni: &str,
-        port: u16,
-        socks: &Url,
-    ) -> Result<TcpStream, Box<dyn Error + Send + Sync>> {
-        let target = match socks.scheme() {
-            "socks5" => self.lookup_ip(sni).await?.to_string(),
-            "socks5h" => sni.to_string(),
-            _ => Err("Invalid scheme for socks")?,
-        };
-
-        let socks_port = socks.port().unwrap_or(1080);
-        let socks_host = match socks.host_str() {
-            Some(socks_host) => (socks_host, socks_port),
-            None => Err("Invalid socks url")?,
-        };
-
-        let upstream =
-            Socks5Stream::connect(socks_host, target, port, SocksConfig::default()).await?;
-
-        Ok(upstream.get_socket())
-    }
-
-    // add ipv6 support
-    #[instrument(skip_all, ret, err)]
-    async fn lookup_ip(&self, sni: &str) -> Result<Ipv4Addr, Box<dyn Error + Send + Sync>> {
-        let lookup = self.resolver.ipv4_lookup(sni).await?;
-
-        let record = lookup.iter().next().ok_or("No IP found")?;
-
-        Ok(Ipv4Addr::from(record.octets()))
-    }
+    Ok(shutdown)
 }

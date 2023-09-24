@@ -1,4 +1,6 @@
+use crate::shutdown::ShutdownReceiver;
 use crate::{Args, UpstreamConnector};
+use anyhow::{anyhow, Error};
 use hyper::client::connect::Connect;
 use hyper::http::uri::Scheme;
 use hyper::rt::Executor;
@@ -6,10 +8,8 @@ use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Client, Request, Response, Server, Uri};
 use std::convert::Infallible;
-use std::error::Error;
 use std::future::{ready, Future};
 use tokio::runtime::Handle;
-use tokio::sync::watch::Receiver;
 use tokio::task::JoinHandle;
 use tracing::{info, info_span, Instrument, Span};
 use tracing_attributes::instrument;
@@ -19,17 +19,17 @@ use tracing_attributes::instrument;
 pub(crate) fn loop_http(
     upstream_connector: UpstreamConnector,
     args: &'static Args,
-    mut shutdown: Receiver<()>,
-) -> JoinHandle<Result<(), Box<dyn Error + Send + Sync>>> {
+    shutdown: ShutdownReceiver,
+) -> JoinHandle<Result<(), Error>> {
     let span = Span::current();
     let connector = tower::service_fn(move |req: Uri| {
         let upstream_connector = upstream_connector.clone();
         Box::pin(
             async move {
-                let host = req.host().ok_or("missing host")?;
+                let host = req.host().ok_or(anyhow!("missing host"))?;
                 upstream_connector.connect(host, 80).await
             }
-            .instrument(info_span!(parent: span.clone(), "connect")),
+            .instrument(span.clone()),
         )
     });
 
@@ -37,35 +37,39 @@ pub(crate) fn loop_http(
         .executor(SpanExecutor::from(info_span!("client_background")))
         .build::<_, Body>(connector);
 
-    tokio::spawn(
-        async move {
-            let addr = format!("{}:{}", args.listen, args.http_port).parse()?;
+    tokio::task::Builder::new()
+        .name("loop_http")
+        .spawn(
+            async move {
+                let addr = format!("{}:{}", args.listen, args.http_port).parse()?;
 
-            let span = Span::current();
-            let make_svc = make_service_fn(|_socket: &AddrStream| {
-                let span = span.clone();
-                let client = client.clone();
-                ready(Ok::<_, Infallible>(service_fn(move |req| {
-                    request(req, client.clone())
-                        .instrument(info_span!(parent: span.clone(), "client"))
-                })))
-            });
+                let span = Span::current();
+                let make_svc = make_service_fn(|_socket: &AddrStream| {
+                    let span = span.clone();
+                    let client = client.clone();
+                    ready(Ok::<_, Infallible>(service_fn(move |req| {
+                        request(req, client.clone())
+                            .instrument(info_span!(parent: span.clone(), "client"))
+                    })))
+                });
 
-            Server::bind(&addr)
-                .executor(SpanExecutor::from(info_span!("server_background")))
-                .serve(make_svc)
-                .with_graceful_shutdown(
-                    async move {
-                        shutdown.changed().await.unwrap();
-                        info!("Shutting down HTTP");
-                    }
-                    .in_current_span(),
-                )
-                .await?;
-            Ok(())
-        }
-        .in_current_span(),
-    )
+                Server::bind(&addr)
+                    .executor(SpanExecutor::from(info_span!("server_background")))
+                    .serve(make_svc)
+                    .with_graceful_shutdown(
+                        async move {
+                            shutdown.wait().await;
+                            info!("Shutting down HTTP");
+                        }
+                        .in_current_span(),
+                    )
+                    .await?;
+                Ok(())
+            }
+            .in_current_span(),
+        )
+        // todo: fix this
+        .unwrap()
 }
 
 #[derive(Clone)]
@@ -94,10 +98,7 @@ where
 }
 
 #[instrument(skip_all, fields(req = ?req), err)]
-async fn request<C>(
-    mut req: Request<Body>,
-    client: Client<C>,
-) -> Result<Response<Body>, Box<dyn Error + Send + Sync>>
+async fn request<C>(mut req: Request<Body>, client: Client<C>) -> Result<Response<Body>, Error>
 where
     C: Connect + Clone + Send + Sync + 'static,
 {

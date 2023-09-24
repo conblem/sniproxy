@@ -1,5 +1,6 @@
+use crate::shutdown::ShutdownReceiver;
 use crate::{Args, UpstreamConnector};
-use std::error::Error;
+use anyhow::{anyhow, Error};
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 use tls_parser::{
@@ -8,7 +9,6 @@ use tls_parser::{
 };
 use tokio::io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::watch::Receiver;
 use tokio::task::JoinHandle;
 use tracing::field::display;
 use tracing::{info, Instrument, Span};
@@ -19,44 +19,49 @@ use tracing_attributes::instrument;
 pub(crate) fn loop_https(
     upstream_connector: UpstreamConnector,
     args: &'static Args,
-    mut shutdown: Receiver<()>,
-) -> JoinHandle<Result<(), Box<dyn Error + Send + Sync>>> {
+    shutdown: ShutdownReceiver,
+) -> JoinHandle<Result<(), Error>> {
     let addr = format!("{}:{}", args.listen, args.tls_port);
 
-    tokio::spawn(
-        async move {
-            let listener = TcpListener::bind(addr).await?;
+    tokio::task::Builder::new()
+        .name("loop_https")
+        .spawn(
+            async move {
+                let listener = TcpListener::bind(addr).await?;
 
-            loop {
-                let accept = listener.accept();
-                let shutdown_fut = shutdown.changed();
-                let (socket, peer) = tokio::select! {
-                    res = accept => res?,
-                    _ = shutdown_fut => {
-                        info!("Shutting down HTTPS");
-                        return Ok(())
-                    },
-                };
-                let upstream_connector = upstream_connector.clone();
-                let mut shutdown = shutdown.clone();
-                tokio::spawn(
-                    async move {
-                        let https = process_https(socket, peer, upstream_connector);
-                        let shutdown = shutdown.changed();
-                        tokio::select! {
-                            res = https => res,
-                            _ = shutdown => {
-                                info!("Shutting down HTTPS");
-                                Ok(())
-                            },
+                loop {
+                    let accept = listener.accept();
+
+                    let shutdown_clone = shutdown.clone();
+                    let shutdown_fut = shutdown.clone().wait();
+                    let (socket, peer) = tokio::select! {
+                        res = accept => res?,
+                        _ = shutdown_fut => {
+                            info!("Shutting down HTTPS");
+                            return Ok(())
+                        },
+                    };
+                    let upstream_connector = upstream_connector.clone();
+                    tokio::task::Builder::new().name("process_https").spawn(
+                        async move {
+                            let https = process_https(socket, peer, upstream_connector);
+                            let shutdown_fut = shutdown_clone.wait();
+                            tokio::select! {
+                                res = https => res,
+                                _ = shutdown_fut => {
+                                    info!("Shutting down HTTPS");
+                                    Ok(())
+                                },
+                            }
                         }
-                    }
-                    .in_current_span(),
-                );
+                        .in_current_span(),
+                    )?;
+                }
             }
-        }
-        .in_current_span(),
-    )
+            .in_current_span(),
+        )
+        // todo: fix this
+        .unwrap()
 }
 
 #[instrument(skip_all, fields(sni, peer = %_peer), err)]
@@ -64,7 +69,7 @@ async fn process_https(
     mut stream: TcpStream,
     _peer: SocketAddr,
     upstream_connector: UpstreamConnector,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<(), Error> {
     let mut buffer = [0u8; 1024];
     let n = stream.read_buf(&mut buffer.as_mut()).await?;
     let buffer = &buffer[..n];
@@ -87,7 +92,10 @@ async fn process_https(
             );
         }
         Err(err) if matches!(err.kind(), ErrorKind::BrokenPipe) => {
-            info!("Client disconnected")
+            info!("Client disconnected: {}", err)
+        }
+        Err(err) if matches!(err.kind(), ErrorKind::ConnectionReset) => {
+            info!("Client disconnected: {}", err)
         }
         Err(err) => Err(err)?,
     };
@@ -96,33 +104,33 @@ async fn process_https(
 }
 
 #[instrument(skip_all, err)]
-fn parse_extensions(buffer: &[u8]) -> Result<Vec<TlsExtension>, Box<dyn Error + Send + Sync>> {
+fn parse_extensions(buffer: &[u8]) -> Result<Vec<TlsExtension>, Error> {
     let msg = match parse_tls_plaintext(buffer) {
         Ok((_, plaintext)) => plaintext.msg,
-        Err(_) => Err("Failed to parse TLS plaintext")?,
+        Err(_) => Err(anyhow!("Failed to parse TLS plaintext"))?,
     };
 
     let handshake = match msg.first() {
         Some(TlsMessage::Handshake(handshake)) => handshake,
-        _ => Err("No TLS handshake found")?,
+        _ => Err(anyhow!("No TLS handshake found"))?,
     };
     let client_hello = match handshake {
         TlsMessageHandshake::ClientHello(client_hello) => client_hello,
-        _ => Err("No ClientHello found")?,
+        _ => Err(anyhow!("No ClientHello found"))?,
     };
     let extensions = match client_hello.ext {
         Some(extensions) => extensions,
-        None => Err("No extensions found")?,
+        None => Err(anyhow!("No extensions found"))?,
     };
 
     match parse_tls_client_hello_extensions(extensions) {
         Ok((_, extensions)) => Ok(extensions),
-        Err(_) => Err("Failed to parse TLS extensions")?,
+        Err(_) => Err(anyhow!("Failed to parse TLS extensions"))?,
     }
 }
 
 #[instrument(skip_all, err)]
-fn parse_sni(extensions: Vec<TlsExtension>) -> Result<&str, Box<dyn Error + Send + Sync>> {
+fn parse_sni(extensions: Vec<TlsExtension>) -> Result<&str, Error> {
     let sni = extensions
         .iter()
         .filter_map(|ext| match ext {
@@ -130,10 +138,10 @@ fn parse_sni(extensions: Vec<TlsExtension>) -> Result<&str, Box<dyn Error + Send
             _ => None,
         })
         .next()
-        .ok_or("SNI Extension not found")?;
+        .ok_or(anyhow!("SNI Extension not found"))?;
 
     match sni.first() {
         Some((_, sni)) => Ok(std::str::from_utf8(sni)?),
-        None => Err("Couldn't parse SNI Name")?,
+        None => Err(anyhow!("Couldn't parse SNI Name"))?,
     }
 }
