@@ -24,6 +24,6 @@ ARG TARGETARCH
 
 WORKDIR /app
 
-COPY $TARGETARCH sniproxy
+COPY --chmod=777 $TARGETARCH sniproxy
 
 ENTRYPOINT ["/app/sniproxy"]
