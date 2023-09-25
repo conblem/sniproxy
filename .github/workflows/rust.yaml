@@ -67,5 +67,5 @@ jobs:
       - uses: docker/build-push-action@v5
         with:
           push: true
-          tags: conblem/sniproxy:latest
+          tags: ghcr.io/conblem/sniproxy:latest
           platforms: linux/amd64,linux/arm64
