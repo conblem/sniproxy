@@ -23,6 +23,6 @@ FROM scratch
 
 WORKDIR /app
 ARG TARGETARCH
-COPY $TARGETARCH ./sniproxy
+COPY $TARGETARCH /app/sniproxy
 
 ENTRYPOINT ["/app/sniproxy"]
