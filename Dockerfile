@@ -19,10 +19,16 @@
 #RUN touch src/main.rs
 #RUN cargo build --release --target=x86_64-unknown-linux-musl
 
-FROM scratch
-
+FROM scratch as copier
 WORKDIR /app
 ARG TARGETARCH
-COPY $TARGETARCH /app/sniproxy
+
+COPY $TARGETARCH .
+
+FROM scratch
+WORKDIR /app
+ARG TARGETARCH
+
+COPY --from=copier /app/$TARGETARCH sniproxy
 
 ENTRYPOINT ["/app/sniproxy"]
