@@ -18,6 +18,10 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-arm64-${{ hashFiles('**/Cargo.lock') }}
+      - uses: baptiste0928/cargo-install@v2
+        with:
+          crate: cross
+          version: "0.2.5"
       - uses: actions-rs/cargo@v1
         with:
           use-cross: true
@@ -38,6 +42,10 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-amd64-${{ hashFiles('**/Cargo.lock') }}
+      - uses: baptiste0928/cargo-install@v2
+        with:
+          crate: cross
+          version: "0.2.5"
       - uses: actions-rs/cargo@v1
         with:
           use-cross: true
@@ -55,9 +63,11 @@ jobs:
       - uses: actions/download-artifact@v3
         with:
           name: arm64
+          path: /home/runner/work/sniproxy/arm64
       - uses: actions/download-artifact@v3
         with:
           name: amd64
+          path: /home/runner/work/sniproxy/amd64
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
