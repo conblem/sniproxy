@@ -1,0 +1,30 @@
+name: Rust
+on:
+  pull_request:
+    branches:
+      - "**"
+jobs:
+  arm64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v5
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: int128/kaniko-action@v1
+        with:
+          file: Dockerfile.arm64
+          tags: ghcr.io/${{ github.repository }}-arm64
+          cache: true
+          cache-repository: ghcr.io/${{ github.repository }}/cache
+      - run: |
+          id=$(docker create image-name)
+          docker cp $id:/app/arm64 . 
+          docker rm -v $id
+      - uses: actions/upload-artifact@v3
+        with:
+          name: arm64
+          path: arm64
+

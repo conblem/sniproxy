@@ -1,0 +1,28 @@
+FROM ahuszagh/aarch64-cross:aarch64-unknown-linux-musl as builder
+
+#RUN apt update
+
+#RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain none -y
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="${PATH}:/root/.cargo/bin"
+
+RUN rustup target add aarch64-unknown-linux-musl
+#RUN rustup toolchain install stable-aarch64-unknown-linux-musl
+
+WORKDIR /app
+COPY Cargo.toml Cargo.toml
+COPY Cargo.lock Cargo.lock
+COPY .cargo/config.toml .cargo/config.toml
+
+COPY fake.rs src/main.rs
+RUN cargo fetch --target=aarch64-unknown-linux-musl
+RUN cargo build --release --target=aarch64-unknown-linux-musl
+
+COPY src src
+RUN touch src/main.rs
+RUN cargo build --release --target=aarch64-unknown-linux-musl
+
+FROM scratch
+WORKDIR /app
+
+COPY --from=builder /app/target/aarch64-unknown-linux-musl/release/sniproxy /app/arm64
