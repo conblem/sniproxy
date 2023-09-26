@@ -16,11 +16,12 @@ jobs:
       - uses: int128/kaniko-action@v1
         with:
           file: Dockerfile.arm64
-          tags: ghcr.io/${{ github.repository }}-arm64
+          push: true
+          tags: ghcr.io/${{ github.repository }}/arm64
           cache: true
           cache-repository: ghcr.io/${{ github.repository }}/cache
       - run: |
-          id=$(docker create ghcr.io/${{ github.repository }}-arm64)
+          id=$(docker create ghcr.io/${{ github.repository }}/arm64)
           docker cp $id:/app/arm64 . 
           docker rm -v $id
       - uses: actions/upload-artifact@v3
