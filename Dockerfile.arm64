@@ -1,21 +1,14 @@
 FROM --platform=linux/amd64 ghcr.io/cross-rs/aarch64-unknown-linux-musl:main as builder
 
-#RUN apt update
-
 #RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain none -y
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y  \
+    && rustup target add aarch64-unknown-linux-musl
 ENV PATH="${PATH}:/root/.cargo/bin"
 
-RUN rustup target add aarch64-unknown-linux-musl
-#RUN rustup toolchain install stable-aarch64-unknown-linux-musl
-
 WORKDIR /app
-COPY Cargo.toml Cargo.toml
-COPY Cargo.lock Cargo.lock
-COPY .cargo/config.toml .cargo/config.toml
+COPY Cargo.toml Cargo.lock .cargo /app/
 
 COPY fake.rs src/main.rs
-RUN cargo fetch --target=aarch64-unknown-linux-musl
 RUN cargo build --release --target=aarch64-unknown-linux-musl
 
 COPY src src
