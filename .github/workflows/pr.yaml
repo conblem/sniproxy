@@ -20,6 +20,7 @@ jobs:
           tags: ghcr.io/${{ github.repository }}/arm64
           cache: true
           cache-repository: ghcr.io/${{ github.repository }}/cache
+          kaniko-args: "--use-new-run --snapshotMode=redo"
       - run: |
           id=$(docker create ghcr.io/${{ github.repository }}/arm64 tail)
           docker cp $id:/app/arm64 . 
