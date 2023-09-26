@@ -7,14 +7,14 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --defau
 ENV PATH="${PATH}:/root/.cargo/bin"
 
 WORKDIR /app
-COPY Cargo.toml Cargo.lock .cargo /app/
+COPY Cargo.toml Cargo.lock /app/
 
 COPY fake.rs src/main.rs
-RUN cargo build --release --target=aarch64-unknown-linux-musl
+RUN RUSTFLAGS='--cfg tokio_unstable' cargo build --release --target=aarch64-unknown-linux-musl
 
 COPY src src
 RUN touch src/main.rs
-RUN cargo build --release --target=aarch64-unknown-linux-musl
+RUN RUSTFLAGS='--cfg tokio_unstable' cargo build --release --target=aarch64-unknown-linux-musl
 
 FROM scratch
 WORKDIR /app
