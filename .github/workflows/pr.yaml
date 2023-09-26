@@ -19,7 +19,7 @@ jobs:
           push: true
           tags: ghcr.io/${{ github.repository }}/arm64
           cache: true
-          cache-repository: ghcr.io/${{ github.repository }}-cache
+          cache-repository: ghcr.io/${{ github.repository }}/cache
           kaniko-args: |
             --use-new-run
             --snapshot-mode=redo
