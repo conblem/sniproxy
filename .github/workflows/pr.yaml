@@ -13,23 +13,12 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: int128/kaniko-action@v1
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v5
         with:
+          context: .
           file: Dockerfile.arm64
-          push: true
-          tags: ghcr.io/${{ github.repository }}/arm64
-          cache: true
-          cache-repository: ghcr.io/${{ github.repository }}/cache
-          kaniko-args: |
-            --use-new-run
-            --snapshot-mode=redo
-
-      - run: |
-          id=$(docker create ghcr.io/${{ github.repository }}/arm64 tail)
-          docker cp $id:/app/arm64 . 
-          docker rm -v $id
-      - uses: actions/upload-artifact@v3
-        with:
-          name: arm64
-          path: arm64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
