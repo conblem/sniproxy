@@ -1,4 +1,4 @@
-FROM ahuszagh/aarch64-cross:aarch64-unknown-linux-musl as builder
+FROM --platform=linux/amd64 ghcr.io/cross-rs/aarch64-unknown-linux-musl:main as builder
 
 #RUN apt update
 
