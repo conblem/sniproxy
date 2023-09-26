@@ -19,6 +19,5 @@ jobs:
           context: .
           file: Dockerfile.arm64
           push: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
+          cache-from: type=registry,ref=ghcr.io/conblem/sniproxy/cache
+          cache-to: type=registry,ref=ghcr.io/conblem/sniproxy/cache,mode=max
