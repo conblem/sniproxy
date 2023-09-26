@@ -1,10 +1,4 @@
-FROM --platform=linux/amd64 ghcr.io/cross-rs/aarch64-unknown-linux-musl:main as builder
-
-#RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain none -y
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain stable-aarch64-unknown-linux-musl -y \
-    && export PATH="$PATH:/root/.cargo/bin" \
-    && rustup target add aarch64-unknown-linux-musl
-ENV PATH="${PATH}:/root/.cargo/bin"
+FROM --platform=linux/amd64 conblem/rust-aarch64-unknown-linux-musl:main as builder
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock /app/
