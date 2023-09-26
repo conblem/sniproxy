@@ -52,7 +52,6 @@ struct Args {
 fn main() -> Result<(), Error> {
     let args = &*Box::leak(Box::new(Args::parse()));
     let rt = Runtime::new()?;
-
     init_tracing(args);
 
     let _span = info_span!("main").entered();
