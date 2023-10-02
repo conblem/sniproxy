@@ -1,6 +1,9 @@
 use crate::shutdown::ShutdownReceiver;
+use crate::util::ToGaugeFuture;
 use crate::{Args, UpstreamConnector};
 use anyhow::{anyhow, Error};
+use once_cell::sync::Lazy;
+use prometheus::{register_int_gauge, IntGauge};
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 use tls_parser::{
@@ -13,6 +16,9 @@ use tokio::task::JoinHandle;
 use tracing::field::display;
 use tracing::{info, Instrument, Span};
 use tracing_attributes::instrument;
+
+static TLS_CONNECTION_COUNT: Lazy<IntGauge> =
+    Lazy::new(|| register_int_gauge!("tls_connection_count", "TLS Connection Count").unwrap());
 
 // todo: log peer addr
 #[instrument(skip_all)]
@@ -54,6 +60,7 @@ pub(crate) fn loop_https(
                                 },
                             }
                         }
+                        .to_gauge(&*TLS_CONNECTION_COUNT)
                         .in_current_span(),
                     )?;
                 }
@@ -105,28 +112,22 @@ async fn process_https(
 
 #[instrument(skip_all, err)]
 fn parse_extensions(buffer: &[u8]) -> Result<Vec<TlsExtension>, Error> {
-    let msg = match parse_tls_plaintext(buffer) {
-        Ok((_, plaintext)) => plaintext.msg,
-        Err(_) => Err(anyhow!("Failed to parse TLS plaintext"))?,
+    let Ok((_, plaintext)) = parse_tls_plaintext(buffer) else {
+        Err(anyhow!("Failed to parse TLS plaintext"))?
+    };
+    let Some(TlsMessage::Handshake(handshake)) = plaintext.msg.first() else {
+        Err(anyhow!("No TLS handshake found"))?
+    };
+    let TlsMessageHandshake::ClientHello(client_hello) = handshake else {
+        Err(anyhow!("No ClientHello found"))?
+    };
+    let Some(extensions) = client_hello.ext else {
+        Err(anyhow!("No extensions found"))?
     };
 
-    let handshake = match msg.first() {
-        Some(TlsMessage::Handshake(handshake)) => handshake,
-        _ => Err(anyhow!("No TLS handshake found"))?,
-    };
-    let client_hello = match handshake {
-        TlsMessageHandshake::ClientHello(client_hello) => client_hello,
-        _ => Err(anyhow!("No ClientHello found"))?,
-    };
-    let extensions = match client_hello.ext {
-        Some(extensions) => extensions,
-        None => Err(anyhow!("No extensions found"))?,
-    };
-
-    match parse_tls_client_hello_extensions(extensions) {
-        Ok((_, extensions)) => Ok(extensions),
-        Err(_) => Err(anyhow!("Failed to parse TLS extensions"))?,
-    }
+    parse_tls_client_hello_extensions(extensions)
+        .map(|(_, extensions)| extensions)
+        .map_err(|_| anyhow!("Failed to parse TLS extensions"))
 }
 
 #[instrument(skip_all, err)]

@@ -14,6 +14,7 @@ use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use trust_dns_resolver::TokioAsyncResolver;
 use url::Url;
 
+use crate::prom::loop_prom;
 #[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
 use tikv_jemallocator::Jemalloc;
 
@@ -22,9 +23,11 @@ use tikv_jemallocator::Jemalloc;
 static GLOBAL: Jemalloc = Jemalloc;
 
 mod http;
+mod prom;
 mod shutdown;
 mod tls;
 mod upstream;
+mod util;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -70,11 +73,13 @@ fn main() -> Result<(), Error> {
         async move {
             let https =
                 loop_https(upstream_connector.clone(), args, shutdown.clone()).in_current_span();
-            let http = loop_http(upstream_connector, args, shutdown).in_current_span();
+            let http = loop_http(upstream_connector, args, shutdown.clone()).in_current_span();
+            let prom = loop_prom(shutdown).in_current_span();
 
             tokio::select! {
                 res = https => res?,
                 res = http => res?,
+                res = prom => res?,
             }
         }
         .in_current_span(),
