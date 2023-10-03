@@ -4,13 +4,13 @@ use crate::tls::loop_https;
 use crate::upstream::UpstreamConnector;
 use anyhow::Error;
 use clap::Parser;
-use opentelemetry_otlp::WithExportConfig;
-use std::net::IpAddr;
 use once_cell::sync::Lazy;
 use opentelemetry::KeyValue;
+use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::runtime::Tokio;
-use opentelemetry_sdk::{Resource, trace};
+use opentelemetry_sdk::{trace, Resource};
 use opentelemetry_semantic_conventions::resource::{SERVICE_NAME, SERVICE_VERSION};
+use std::net::IpAddr;
 use tokio::runtime::{Handle, Runtime};
 use tracing::{info, info_span, Instrument, Level, Subscriber};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
@@ -23,6 +23,7 @@ use url::Url;
 use crate::prom::loop_prom;
 #[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
 use tikv_jemallocator::Jemalloc;
+use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::Layer;
 
@@ -86,8 +87,7 @@ fn main() -> Result<(), Error> {
 
     rt.block_on(
         async move {
-            let https =
-                loop_https(upstream_connector.clone(), shutdown.clone()).in_current_span();
+            let https = loop_https(upstream_connector.clone(), shutdown.clone()).in_current_span();
             let http = loop_http(upstream_connector, shutdown.clone()).in_current_span();
             let prom = loop_prom(shutdown).in_current_span();
 
@@ -146,7 +146,9 @@ fn otel_layer<S>(otel_endpoint: String) -> impl Layer<S>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
-    let exporter = opentelemetry_otlp::new_exporter().tonic().with_endpoint(otel_endpoint);
+    let exporter = opentelemetry_otlp::new_exporter()
+        .tonic()
+        .with_endpoint(otel_endpoint);
     let tracer = opentelemetry_otlp::new_pipeline()
         .tracing()
         .with_exporter(exporter)
@@ -154,15 +156,15 @@ where
         .install_batch(Tokio)
         .expect("Failed to create tracer");
 
-    tracing_opentelemetry::layer().with_tracer(tracer)
+    tracing_opentelemetry::layer()
+        .with_tracer(tracer)
+        .with_filter(LevelFilter::INFO)
 }
 
 const VERSION: Option<&str> = option_env!("CARGO_PKG_VERSION");
 
 fn otel_config() -> trace::Config {
-    let mut values = vec![
-        KeyValue::new(SERVICE_NAME, &*ARGS.otel_service_name),
-    ];
+    let mut values = vec![KeyValue::new(SERVICE_NAME, &*ARGS.otel_service_name)];
     if let Some(version) = VERSION {
         values.push(KeyValue::new(SERVICE_VERSION, version));
     }

@@ -8,7 +8,7 @@ edition = "2021"
 [features]
 default = ["console", "jemalloc"]
 jemalloc = ["tikv-jemallocator"]
-console = ["console-subscriber", "opentelemetry", "opentelemetry_sdk","opentelemetry-otlp", "tracing-opentelemetry", "opentelemetry-semantic-conventions"]
+console = ["console-subscriber", "opentelemetry", "opentelemetry_sdk","opentelemetry-otlp", "tracing-opentelemetry", "opentelemetry-semantic-conventions", "tracing-subscriber/registry"]
 
 [dependencies]
 tokio = { version = "1.32.0", features = ["full", "tracing"] }
