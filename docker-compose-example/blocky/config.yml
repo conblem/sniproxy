@@ -1,0 +1,22 @@
+bootstrapDns:
+  - upstream: tcp-tls:dns.nextdns.io:853
+    ips:
+      - 45.90.28.220
+      - 45.90.30.220
+upstreams:
+  groups:
+    default:
+      - tcp-tls:dns.nextdns.io:853
+customDNS:
+  customTTL: 1m
+  filterUnmappedTypes: true
+  mapping:
+    # This can be used to override dns queries for specific domains
+    google.com: 100.78.78.114
+ports:
+  dns: 53
+log:
+  level: debug
+prometheus:
+  enable: true
+startVerifyUpstream: true

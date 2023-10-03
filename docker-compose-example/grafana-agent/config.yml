@@ -1,0 +1,15 @@
+server:
+  log_level: debug
+
+traces:
+  configs:
+    - name: default
+      remote_write:
+        - endpoint: tempo-us-central1.grafana.net:443
+          basic_auth:
+            username: ${TEMPO_USERNAME}
+            password: ${TEMPO_API_KEY}
+      receivers:
+        otlp:
+          protocols:
+            grpc:
