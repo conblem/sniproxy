@@ -1,0 +1,25 @@
+FROM --platform=linux/amd64 ghcr.io/cross-rs/x86_64-unknown-linux-musl:main as builder
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+    && export PATH="$PATH:/root/.cargo/bin" \
+    && rustup target add x86_64-unknown-linux-musl
+
+ENV PATH="${PATH}:/root/.cargo/bin"
+
+WORKDIR /app
+COPY Cargo.toml Cargo.lock /app/
+COPY .cargo/config.toml .cargo/config.toml
+
+COPY fake.rs src/main.rs
+RUN cargo build --release --target=x86_64-unknown-linux-musl
+
+COPY src src
+RUN touch src/main.rs
+RUN cargo build --release --target=x86_64-unknown-linux-musl
+
+FROM --platform=linux/amd64 scratch
+WORKDIR /app
+
+COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/sniproxy /app/sniproxy
+
+ENTRYPOINT ["/app/sniproxy"]

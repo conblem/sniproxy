@@ -8,7 +8,7 @@ edition = "2021"
 [features]
 default = ["console", "jemalloc"]
 jemalloc = ["tikv-jemallocator"]
-console = ["console-subscriber"]
+console = ["console-subscriber", "opentelemetry", "opentelemetry_sdk","opentelemetry-otlp", "tracing-opentelemetry"]
 
 [dependencies]
 tokio = { version = "1.32.0", features = ["full", "tracing"] }
@@ -26,7 +26,16 @@ tracing-subscriber = { version = "0.3", features = ["parking_lot"] }
 hyper = { version = "0.14.27", features = ["server", "http1", "client", "tcp"] , default-features = false }
 tower = { version = "0.4.13", features = ["util"]}
 anyhow = "1.0.75"
-console-subscriber = { version = "0.1.10", features = ["parking_lot"], optional = true }
+prometheus = "0.13.3"
+once_cell = { version = "1.18.0", features = ["parking_lot"] }
+pin-project = "1"
+http-body = "0.4.5"
+
+console-subscriber = { version = "0.2.0", features = ["parking_lot"], optional = true }
+opentelemetry = { version = "0.20.0", optional = true }
+opentelemetry_sdk = { version = "0.20.0", optional = true }
+opentelemetry-otlp = { version = "0.13.0", features = ["trace"], optional = true }
+tracing-opentelemetry = { version = "0.21.0", optional = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { version = "0.5", optional = true }

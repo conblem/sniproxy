@@ -1,4 +1,5 @@
 use crate::shutdown::ShutdownReceiver;
+use crate::util::ToGaugeFuture;
 use crate::{Args, UpstreamConnector};
 use anyhow::{anyhow, Error};
 use hyper::client::connect::Connect;
@@ -7,12 +8,17 @@ use hyper::rt::Executor;
 use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Client, Request, Response, Server, Uri};
+use once_cell::sync::Lazy;
+use prometheus::{register_int_gauge, IntGauge};
 use std::convert::Infallible;
 use std::future::{ready, Future};
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
 use tracing::{info, info_span, Instrument, Span};
 use tracing_attributes::instrument;
+
+static HTTP_CONNECTION_COUNT: Lazy<IntGauge> =
+    Lazy::new(|| register_int_gauge!("http_connection_count", "HTTP Connection count").unwrap());
 
 // add shutdown logic
 #[instrument(skip_all)]
@@ -49,6 +55,7 @@ pub(crate) fn loop_http(
                     let client = client.clone();
                     ready(Ok::<_, Infallible>(service_fn(move |req| {
                         request(req, client.clone())
+                            .to_gauge(&*HTTP_CONNECTION_COUNT)
                             .instrument(info_span!(parent: span.clone(), "client"))
                     })))
                 });
