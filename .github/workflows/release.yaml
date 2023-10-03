@@ -39,3 +39,9 @@ jobs:
           suffixes: |
             -amd64
             -arm64
+      - uses: docker/build-push-action@v5
+        with:
+          tags: ghcr.io/conblem/sniproxy:main-alpine
+          file: Dockerfile.alpine
+          platforms: "linux/amd64,linux/arm64"
+          push: true
