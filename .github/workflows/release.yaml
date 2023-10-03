@@ -39,6 +39,7 @@ jobs:
           suffixes: |
             -amd64
             -arm64
+      - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v5
         with:
           tags: ghcr.io/conblem/sniproxy:main-alpine
