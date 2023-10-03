@@ -990,6 +990,8 @@ dependencies = [
  "regex",
  "serde_json",
  "thiserror",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]
@@ -1478,6 +1480,7 @@ dependencies = [
  "once_cell",
  "opentelemetry",
  "opentelemetry-otlp",
+ "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
  "pin-project",
  "prometheus",

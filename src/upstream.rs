@@ -1,4 +1,3 @@
-use crate::Args;
 use anyhow::{anyhow, Error};
 use fast_socks5::client::{Config as SocksConfig, Socks5Stream};
 use std::net::Ipv4Addr;
@@ -8,23 +7,23 @@ use tracing_attributes::instrument;
 use trust_dns_resolver::TokioAsyncResolver;
 use url::Url;
 
+use crate::ARGS;
+
 #[derive(Clone)]
 pub(crate) struct UpstreamConnector {
     resolver: Arc<TokioAsyncResolver>,
-    args: &'static Args,
 }
 
 impl UpstreamConnector {
-    pub(crate) fn new(upstream_connector: TokioAsyncResolver, args: &'static Args) -> Self {
+    pub(crate) fn new(upstream_connector: TokioAsyncResolver) -> Self {
         Self {
             resolver: Arc::new(upstream_connector),
-            args,
         }
     }
 
     #[instrument(skip_all, fields(port = port), err)]
     pub(crate) async fn connect(&self, sni: &str, port: u16) -> Result<TcpStream, Error> {
-        match self.args.socks {
+        match ARGS.socks {
             Some(ref socks) => self.upstream_socks(sni, port, socks).await,
             None => self.upstream_direct(sni, port).await,
         }

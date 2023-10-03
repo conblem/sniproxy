@@ -1,6 +1,3 @@
-use crate::shutdown::ShutdownReceiver;
-use crate::util::ToGaugeFuture;
-use crate::{Args, UpstreamConnector};
 use anyhow::{anyhow, Error};
 use hyper::client::connect::Connect;
 use hyper::http::uri::Scheme;
@@ -17,6 +14,10 @@ use tokio::task::JoinHandle;
 use tracing::{info, info_span, Instrument, Span};
 use tracing_attributes::instrument;
 
+use crate::shutdown::ShutdownReceiver;
+use crate::util::ToGaugeFuture;
+use crate::{UpstreamConnector, ARGS};
+
 static HTTP_CONNECTION_COUNT: Lazy<IntGauge> =
     Lazy::new(|| register_int_gauge!("http_connection_count", "HTTP Connection count").unwrap());
 
@@ -24,7 +25,6 @@ static HTTP_CONNECTION_COUNT: Lazy<IntGauge> =
 #[instrument(skip_all)]
 pub(crate) fn loop_http(
     upstream_connector: UpstreamConnector,
-    args: &'static Args,
     shutdown: ShutdownReceiver,
 ) -> JoinHandle<Result<(), Error>> {
     let span = Span::current();
@@ -47,7 +47,7 @@ pub(crate) fn loop_http(
         .name("loop_http")
         .spawn(
             async move {
-                let addr = format!("{}:{}", args.listen, args.http_port).parse()?;
+                let addr = format!("{}:{}", ARGS.listen, ARGS.http_port).parse()?;
 
                 let span = Span::current();
                 let make_svc = make_service_fn(|_socket: &AddrStream| {
