@@ -1,0 +1,8 @@
+FROM --platform=$TARGETPLATFORM ghcr.io/conblem/sniproxy:main as executable
+
+FROM --platform=$TARGETPLATFORM alpine
+
+WORKDIR /app
+COPY --from=executable /app/sniproxy /app/sniproxy
+
+ENTRYPOINT ["/app/sniproxy"]
