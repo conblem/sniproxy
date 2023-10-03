@@ -4,9 +4,12 @@ use crate::tls::loop_https;
 use crate::upstream::UpstreamConnector;
 use anyhow::Error;
 use clap::Parser;
+use opentelemetry::trace::TracerProvider as _;
+use opentelemetry_otlp::{ExportConfig, SpanExporter, TonicConfig};
+use opentelemetry_sdk::trace::TracerProvider;
 use std::net::IpAddr;
 use tokio::runtime::{Handle, Runtime};
-use tracing::{info, info_span, Instrument, Level};
+use tracing::{info, info_span, Instrument, Level, Subscriber};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -17,6 +20,8 @@ use url::Url;
 use crate::prom::loop_prom;
 #[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
 use tikv_jemallocator::Jemalloc;
+use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::Layer;
 
 #[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
 #[global_allocator]
@@ -50,12 +55,16 @@ struct Args {
 
     #[arg(long, default_value = "6669")]
     console_port: u16,
+
+    #[arg(long)]
+    otel_endpoint: Option<String>,
 }
 
 fn main() -> Result<(), Error> {
     let args = &*Box::leak(Box::new(Args::parse()));
 
     let rt = Runtime::new()?;
+    let _enter = rt.enter();
 
     init_tracing(args);
 
@@ -88,25 +97,60 @@ fn main() -> Result<(), Error> {
 
 #[cfg(feature = "console")]
 fn init_tracing(args: &Args) {
-    let writer = std::io::stdout.with_max_level(Level::INFO);
-    let fmt_layer = tracing_subscriber::fmt::layer().with_writer(writer);
-    let registry = tracing_subscriber::registry().with(fmt_layer);
-    if let Some(console_listen) = args.console_listen {
-        let console_layer = console_subscriber::ConsoleLayer::builder()
-            .server_addr((console_listen, args.console_port))
-            .spawn();
+    let registry = tracing_subscriber::registry().with(fmt_layer());
 
-        registry.with(console_layer).init();
-    } else {
+    let Some(console_listen) = args.console_listen else {
         registry.init();
-    }
+        return;
+    };
+
+    let registry = registry.with(console_layer(console_listen, args.console_port));
+
+    let Some(otel_endpoint) = args.otel_endpoint.clone() else {
+        registry.init();
+        return;
+    };
+
+    registry.with(otel_layer(otel_endpoint)).init();
 }
 
 #[cfg(not(feature = "console"))]
 fn init_tracing(args: &Args) {
+    tracing_subscriber::registry().with(fmt_layer()).init();
+}
+
+fn fmt_layer<S>() -> impl Layer<S>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
     let writer = std::io::stdout.with_max_level(Level::INFO);
-    let fmt_layer = tracing_subscriber::fmt::layer().with_writer(writer);
-    tracing_subscriber::registry().with(fmt_layer).init();
+    tracing_subscriber::fmt::layer().with_writer(writer)
+}
+
+fn console_layer<S>(console_listen: IpAddr, console_port: u16) -> impl Layer<S>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    console_subscriber::ConsoleLayer::builder()
+        .server_addr((console_listen, console_port))
+        .spawn()
+}
+
+fn otel_layer<S>(otel_endpoint: String) -> impl Layer<S>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    let export_config = ExportConfig {
+        endpoint: otel_endpoint.clone(),
+        ..Default::default()
+    };
+    let span_exporter = SpanExporter::new_tonic(export_config, TonicConfig::default()).unwrap();
+    let provider = TracerProvider::builder()
+        .with_simple_exporter(span_exporter)
+        .build();
+    let tracer = provider.tracer("sniproxy");
+
+    tracing_opentelemetry::layer().with_tracer(tracer)
 }
 
 fn init_shutdown(handle: &Handle) -> Result<ShutdownReceiver, Error> {
