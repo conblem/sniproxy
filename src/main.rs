@@ -1,7 +1,3 @@
-use crate::http::loop_http;
-use crate::shutdown::{ShutdownReceiver, ShutdownTask};
-use crate::tls::loop_https;
-use crate::upstream::UpstreamConnector;
 use anyhow::Error;
 use clap::Parser;
 use once_cell::sync::Lazy;
@@ -13,19 +9,22 @@ use opentelemetry_semantic_conventions::resource::{SERVICE_NAME, SERVICE_VERSION
 use std::net::IpAddr;
 use tokio::runtime::{Handle, Runtime};
 use tracing::{info, info_span, Instrument, Level, Subscriber};
+use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
-use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
-use trust_dns_resolver::TokioAsyncResolver;
+use tracing_subscriber::Layer;
 use url::Url;
 
-use crate::prom::loop_prom;
 #[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
 use tikv_jemallocator::Jemalloc;
-use tracing_subscriber::filter::LevelFilter;
-use tracing_subscriber::registry::LookupSpan;
-use tracing_subscriber::Layer;
+
+use crate::http::loop_http;
+use crate::prom::loop_prom;
+use crate::shutdown::{ShutdownReceiver, ShutdownTask};
+use crate::tls::loop_https;
+use crate::upstream::UpstreamConnector;
 
 #[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
 #[global_allocator]
@@ -67,6 +66,9 @@ struct Args {
 
     #[arg(long, default_value = "sniproxy")]
     otel_service_name: String,
+
+    #[arg(long)]
+    dns: Option<String>,
 }
 
 fn main() -> Result<(), Error> {
@@ -81,12 +83,10 @@ fn main() -> Result<(), Error> {
 
     let shutdown = init_shutdown(rt.handle())?;
 
-    let resolver =
-        TokioAsyncResolver::tokio(ResolverConfig::cloudflare_tls(), ResolverOpts::default());
-    let upstream_connector = UpstreamConnector::new(resolver);
-
     rt.block_on(
         async move {
+            let upstream_connector = UpstreamConnector::new().await?;
+
             let https = loop_https(upstream_connector.clone(), shutdown.clone()).in_current_span();
             let http = loop_http(upstream_connector, shutdown.clone()).in_current_span();
             let prom = loop_prom(shutdown).in_current_span();
