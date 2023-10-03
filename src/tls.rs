@@ -1,6 +1,3 @@
-use crate::shutdown::ShutdownReceiver;
-use crate::util::ToGaugeFuture;
-use crate::{Args, UpstreamConnector};
 use anyhow::{anyhow, Error};
 use once_cell::sync::Lazy;
 use prometheus::{register_int_gauge, IntGauge};
@@ -17,6 +14,10 @@ use tracing::field::display;
 use tracing::{info, Instrument, Span};
 use tracing_attributes::instrument;
 
+use crate::shutdown::ShutdownReceiver;
+use crate::util::ToGaugeFuture;
+use crate::{UpstreamConnector, ARGS};
+
 static TLS_CONNECTION_COUNT: Lazy<IntGauge> =
     Lazy::new(|| register_int_gauge!("tls_connection_count", "TLS Connection Count").unwrap());
 
@@ -24,10 +25,9 @@ static TLS_CONNECTION_COUNT: Lazy<IntGauge> =
 #[instrument(skip_all)]
 pub(crate) fn loop_https(
     upstream_connector: UpstreamConnector,
-    args: &'static Args,
     shutdown: ShutdownReceiver,
 ) -> JoinHandle<Result<(), Error>> {
-    let addr = format!("{}:{}", args.listen, args.tls_port);
+    let addr = format!("{}:{}", ARGS.listen, ARGS.tls_port);
 
     tokio::task::Builder::new()
         .name("loop_https")

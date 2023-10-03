@@ -4,10 +4,13 @@ use crate::tls::loop_https;
 use crate::upstream::UpstreamConnector;
 use anyhow::Error;
 use clap::Parser;
-use opentelemetry::trace::TracerProvider as _;
-use opentelemetry_otlp::{ExportConfig, SpanExporter, TonicConfig};
-use opentelemetry_sdk::trace::TracerProvider;
+use opentelemetry_otlp::WithExportConfig;
 use std::net::IpAddr;
+use once_cell::sync::Lazy;
+use opentelemetry::KeyValue;
+use opentelemetry_sdk::runtime::Tokio;
+use opentelemetry_sdk::{Resource, trace};
+use opentelemetry_semantic_conventions::resource::{SERVICE_NAME, SERVICE_VERSION};
 use tokio::runtime::{Handle, Runtime};
 use tracing::{info, info_span, Instrument, Level, Subscriber};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
@@ -34,6 +37,8 @@ mod tls;
 mod upstream;
 mod util;
 
+static ARGS: Lazy<Args> = Lazy::new(|| Args::parse());
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -58,15 +63,16 @@ struct Args {
 
     #[arg(long)]
     otel_endpoint: Option<String>,
+
+    #[arg(long, default_value = "sniproxy")]
+    otel_service_name: String,
 }
 
 fn main() -> Result<(), Error> {
-    let args = &*Box::leak(Box::new(Args::parse()));
-
     let rt = Runtime::new()?;
     let _enter = rt.enter();
 
-    init_tracing(args);
+    init_tracing();
 
     let _span = info_span!("main").entered();
 
@@ -76,13 +82,13 @@ fn main() -> Result<(), Error> {
 
     let resolver =
         TokioAsyncResolver::tokio(ResolverConfig::cloudflare_tls(), ResolverOpts::default());
-    let upstream_connector = UpstreamConnector::new(resolver, args);
+    let upstream_connector = UpstreamConnector::new(resolver);
 
     rt.block_on(
         async move {
             let https =
-                loop_https(upstream_connector.clone(), args, shutdown.clone()).in_current_span();
-            let http = loop_http(upstream_connector, args, shutdown.clone()).in_current_span();
+                loop_https(upstream_connector.clone(), shutdown.clone()).in_current_span();
+            let http = loop_http(upstream_connector, shutdown.clone()).in_current_span();
             let prom = loop_prom(shutdown).in_current_span();
 
             tokio::select! {
@@ -96,17 +102,17 @@ fn main() -> Result<(), Error> {
 }
 
 #[cfg(feature = "console")]
-fn init_tracing(args: &Args) {
+fn init_tracing() {
     let registry = tracing_subscriber::registry().with(fmt_layer());
 
-    let Some(console_listen) = args.console_listen else {
+    let Some(console_listen) = ARGS.console_listen else {
         registry.init();
         return;
     };
 
-    let registry = registry.with(console_layer(console_listen, args.console_port));
+    let registry = registry.with(console_layer(console_listen, ARGS.console_port));
 
-    let Some(otel_endpoint) = args.otel_endpoint.clone() else {
+    let Some(otel_endpoint) = ARGS.otel_endpoint.clone() else {
         registry.init();
         return;
     };
@@ -140,17 +146,28 @@ fn otel_layer<S>(otel_endpoint: String) -> impl Layer<S>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
-    let export_config = ExportConfig {
-        endpoint: otel_endpoint.clone(),
-        ..Default::default()
-    };
-    let span_exporter = SpanExporter::new_tonic(export_config, TonicConfig::default()).unwrap();
-    let provider = TracerProvider::builder()
-        .with_simple_exporter(span_exporter)
-        .build();
-    let tracer = provider.tracer("sniproxy");
+    let exporter = opentelemetry_otlp::new_exporter().tonic().with_endpoint(otel_endpoint);
+    let tracer = opentelemetry_otlp::new_pipeline()
+        .tracing()
+        .with_exporter(exporter)
+        .with_trace_config(otel_config())
+        .install_batch(Tokio)
+        .expect("Failed to create tracer");
 
     tracing_opentelemetry::layer().with_tracer(tracer)
+}
+
+const VERSION: Option<&str> = option_env!("CARGO_PKG_VERSION");
+
+fn otel_config() -> trace::Config {
+    let mut values = vec![
+        KeyValue::new(SERVICE_NAME, &*ARGS.otel_service_name),
+    ];
+    if let Some(version) = VERSION {
+        values.push(KeyValue::new(SERVICE_VERSION, version));
+    }
+
+    trace::config().with_resource(Resource::new(values))
 }
 
 fn init_shutdown(handle: &Handle) -> Result<ShutdownReceiver, Error> {
