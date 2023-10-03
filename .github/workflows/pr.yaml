@@ -19,6 +19,7 @@ jobs:
       - uses: docker/build-push-action@v5
         with:
           file: Dockerfile.${{ matrix.arch }}
+          platforms: linux/${{ matrix.arch }}
           push: false
           cache-from: type=registry,ref=ghcr.io/conblem/sniproxy/cache-${{ matrix.arch }}
           cache-to: type=registry,ref=ghcr.io/conblem/sniproxy/cache-${{ matrix.arch }},mode=max

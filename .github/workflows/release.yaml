@@ -20,6 +20,7 @@ jobs:
         with:
           tags: ghcr.io/conblem/sniproxy:main-${{ matrix.arch }}
           file: Dockerfile.${{ matrix.arch }}
+          platforms: linux/${{ matrix.arch }}
           push: true
           cache-from: type=registry,ref=ghcr.io/conblem/sniproxy/cache-${{ matrix.arch }}
           cache-to: type=registry,ref=ghcr.io/conblem/sniproxy/cache-${{ matrix.arch}},mode=max
