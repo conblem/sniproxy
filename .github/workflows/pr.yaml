@@ -20,5 +20,5 @@ jobs:
         with:
           file: Dockerfile.${{ matrix.arch }}
           push: false
-          cache-from: type=registry,ref=ghcr.io/conblem/sniproxy/cache
-          cache-to: type=registry,ref=ghcr.io/conblem/sniproxy/cache,mode=max
+          cache-from: type=registry,ref=ghcr.io/conblem/sniproxy/cache-${{ matrix.arch }}
+          cache-to: type=registry,ref=ghcr.io/conblem/sniproxy/cache-${{ matrix.arch }},mode=max

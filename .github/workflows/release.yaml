@@ -21,8 +21,8 @@ jobs:
           tags: ghcr.io/conblem/sniproxy:main-${{ matrix.arch }}
           file: Dockerfile.${{ matrix.arch }}
           push: true
-          cache-from: type=registry,ref=ghcr.io/conblem/sniproxy/cache
-          cache-to: type=registry,ref=ghcr.io/conblem/sniproxy/cache,mode=max
+          cache-from: type=registry,ref=ghcr.io/conblem/sniproxy/cache-${{ matrix.arch }}
+          cache-to: type=registry,ref=ghcr.io/conblem/sniproxy/cache-${{ matrix.arch}},mode=max
   push:
     needs: build
     runs-on: ubuntu-latest
