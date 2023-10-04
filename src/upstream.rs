@@ -30,7 +30,10 @@ impl UpstreamConnector {
         let mut resolver_config = ResolverConfig::new();
         resolver_config.add_name_server(name_server_config);
 
-        let resolver = TokioAsyncResolver::tokio(resolver_config, ResolverOpts::default());
+        let mut opts = ResolverOpts::default();
+        opts.try_tcp_on_error = true;
+
+        let resolver = TokioAsyncResolver::tokio(resolver_config, opts);
 
         Ok(Self {
             resolver: Some(Arc::new(resolver)),
@@ -64,9 +67,10 @@ impl UpstreamConnector {
         let Some(socks_host) = socks.host_str() else {
             Err(anyhow!("Invalid socks url"))?
         };
+        let socks_addr = self.lookup_ip(socks_host).await?;
 
         let upstream = Socks5Stream::connect(
-            (socks_host, socks_port),
+            (socks_addr, socks_port),
             target,
             port,
             SocksConfig::default(),
@@ -79,17 +83,23 @@ impl UpstreamConnector {
     // add ipv6 support
     #[instrument(skip_all, ret, err)]
     async fn lookup_ip(&self, sni: &str) -> Result<Ipv4Addr, Error> {
+        // If sni is already an ip we return early
+        // this check is needed because ipv4_lookup does not support ip addresses
+        // and will actually query the dns with ip addr
+        if let Ok(ip) = sni.parse::<Ipv4Addr>() {
+            return Ok(ip);
+        }
+
         if let Some(resolver) = &self.resolver {
             let lookup = resolver.ipv4_lookup(sni).await?;
 
-            let Some(record) = lookup.iter().next() else {
-                Err(anyhow!("No IP found"))?
-            };
+            let record = lookup.iter().next().ok_or_else(|| anyhow!("No IP found"))?;
 
             return Ok(Ipv4Addr::from(record.octets()));
         }
 
-        let addr = lookup_host(sni)
+        // this method requires a port we ignore afterward
+        let addr = lookup_host((sni, 80))
             .await?
             .filter_map(|addr| match addr {
                 SocketAddr::V4(addr) => Some(addr),
