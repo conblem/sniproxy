@@ -155,7 +155,15 @@ impl UpstreamConnector {
         }
 
         // this method requires a port we ignore afterward
-        let addr = lookup_host((sni, 80)).await?.collect::<Vec<_>>().into();
+        let addr = lookup_host((sni, 80))
+            .await?
+            .filter(|addr| match addr {
+                SocketAddr::V4(_) if ARGS.ipv4 => true,
+                SocketAddr::V6(_) if ARGS.ipv6 => true,
+                _ => false,
+            })
+            .collect::<Vec<_>>()
+            .into();
 
         Ok(addr)
     }
