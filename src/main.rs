@@ -69,6 +69,12 @@ struct Args {
 
     #[arg(long)]
     dns: Option<String>,
+
+    #[arg(long, default_value = "true")]
+    ipv4: bool,
+
+    #[arg(long, default_value = "false")]
+    ipv6: bool,
 }
 
 fn main() -> Result<(), Error> {
