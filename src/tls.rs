@@ -7,7 +7,7 @@ use tls_parser::{
     parse_tls_client_hello_extensions, parse_tls_plaintext, TlsExtension, TlsMessage,
     TlsMessageHandshake,
 };
-use tokio::io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 use tracing::field::display;
@@ -108,6 +108,24 @@ async fn process_https(
     };
 
     Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn copy_bidirectional<A, B>(a: &mut A, b: &mut B) -> std::io::Result<(u64, u64)>
+where
+    A: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    B: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    tokio::io::copy_bidirectional(a, b).await
+}
+
+#[cfg(target_os = "linux")]
+async fn copy_bidirectional<A, B>(a: &mut A, b: &mut B) -> std::io::Result<(u64, u64)>
+where
+    A: tokio_splice::Stream + Unpin,
+    B: tokio_splice::Stream + Unpin,
+{
+    tokio_splice::zero_copy_bidirectional(a, b).await
 }
 
 #[instrument(skip_all, err)]

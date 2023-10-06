@@ -1468,6 +1468,7 @@ dependencies = [
  "tikv-jemallocator",
  "tls-parser",
  "tokio",
+ "tokio-splice",
  "tower",
  "tracing",
  "tracing-attributes",
@@ -1650,6 +1651,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.37",
+]
+
+[[package]]
+name = "tokio-splice"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e78cd6ebfc8fb5aa9391460ee21e1501c7d06f31d0243acbd5a14f6758c87b6"
+dependencies = [
+ "libc",
+ "tokio",
 ]
 
 [[package]]
