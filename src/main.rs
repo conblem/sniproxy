@@ -33,6 +33,7 @@ static GLOBAL: Jemalloc = Jemalloc;
 mod http;
 mod prom;
 mod shutdown;
+mod task;
 mod tls;
 mod upstream;
 mod util;

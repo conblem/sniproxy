@@ -15,7 +15,8 @@ use tracing::{info, info_span, Instrument, Span};
 use tracing_attributes::instrument;
 
 use crate::shutdown::ShutdownReceiver;
-use crate::util::ToGaugeFuture;
+use crate::task::Task;
+use crate::util::FutureExt;
 use crate::{UpstreamConnector, ARGS};
 
 static HTTP_CONNECTION_COUNT: Lazy<IntGauge> =
@@ -27,8 +28,49 @@ pub(crate) fn loop_http(
     upstream_connector: UpstreamConnector,
     shutdown: ShutdownReceiver,
 ) -> JoinHandle<Result<(), Error>> {
+    let connector = connector_factory(upstream_connector.clone());
+
+    let client = Client::builder()
+        .executor(SpanExecutor::from(info_span!("client_background")))
+        .build::<_, Body>(connector);
+
+    Task::new("loop_http")
+        .in_current_span()
+        .spawn(async move {
+            let addr = format!("{}:{}", ARGS.listen, ARGS.http_port).parse()?;
+
+            let span = Span::current();
+            let make_svc = make_service_fn(|_socket: &AddrStream| {
+                let span = span.clone();
+                let client = client.clone();
+                ready(Ok::<_, Infallible>(service_fn(move |req| {
+                    request(req, client.clone())
+                        .to_gauge(&*HTTP_CONNECTION_COUNT)
+                        .instrument(info_span!(parent: span.clone(), "client"))
+                })))
+            });
+
+            Server::bind(&addr)
+                .executor(SpanExecutor::from(info_span!("server_background")))
+                .serve(make_svc)
+                .with_graceful_shutdown(
+                    async move {
+                        shutdown.wait().await;
+                        info!("Shutting down loop_http");
+                    }
+                    .in_current_span(),
+                )
+                .await?;
+            Ok(())
+        })
+        // todo: fix this
+        .unwrap()
+}
+
+fn connector_factory(upstream_connector: UpstreamConnector) -> impl Connect + Clone {
     let span = Span::current();
-    let connector = tower::service_fn(move |req: Uri| {
+
+    tower::service_fn(move |req: Uri| {
         let upstream_connector = upstream_connector.clone();
         Box::pin(
             async move {
@@ -37,46 +79,7 @@ pub(crate) fn loop_http(
             }
             .instrument(span.clone()),
         )
-    });
-
-    let client = Client::builder()
-        .executor(SpanExecutor::from(info_span!("client_background")))
-        .build::<_, Body>(connector);
-
-    tokio::task::Builder::new()
-        .name("loop_http")
-        .spawn(
-            async move {
-                let addr = format!("{}:{}", ARGS.listen, ARGS.http_port).parse()?;
-
-                let span = Span::current();
-                let make_svc = make_service_fn(|_socket: &AddrStream| {
-                    let span = span.clone();
-                    let client = client.clone();
-                    ready(Ok::<_, Infallible>(service_fn(move |req| {
-                        request(req, client.clone())
-                            .to_gauge(&*HTTP_CONNECTION_COUNT)
-                            .instrument(info_span!(parent: span.clone(), "client"))
-                    })))
-                });
-
-                Server::bind(&addr)
-                    .executor(SpanExecutor::from(info_span!("server_background")))
-                    .serve(make_svc)
-                    .with_graceful_shutdown(
-                        async move {
-                            shutdown.wait().await;
-                            info!("Shutting down HTTP");
-                        }
-                        .in_current_span(),
-                    )
-                    .await?;
-                Ok(())
-            }
-            .in_current_span(),
-        )
-        // todo: fix this
-        .unwrap()
+    })
 }
 
 #[derive(Clone)]

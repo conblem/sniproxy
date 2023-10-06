@@ -11,17 +11,16 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 use tracing::field::display;
-use tracing::{info, Instrument, Span};
+use tracing::{info, Span};
 use tracing_attributes::instrument;
 
 use crate::shutdown::ShutdownReceiver;
-use crate::util::ToGaugeFuture;
+use crate::task::Task;
 use crate::{UpstreamConnector, ARGS};
 
 static TLS_CONNECTION_COUNT: Lazy<IntGauge> =
     Lazy::new(|| register_int_gauge!("tls_connection_count", "TLS Connection Count").unwrap());
 
-// todo: log peer addr
 #[instrument(skip_all)]
 pub(crate) fn loop_https(
     upstream_connector: UpstreamConnector,
@@ -29,45 +28,24 @@ pub(crate) fn loop_https(
 ) -> JoinHandle<Result<(), Error>> {
     let addr = format!("{}:{}", ARGS.listen, ARGS.tls_port);
 
-    tokio::task::Builder::new()
-        .name("loop_https")
-        .spawn(
-            async move {
-                let listener = TcpListener::bind(addr).await?;
+    Task::new("loop_https")
+        .in_current_span()
+        .with_shutdown(shutdown.clone())
+        .spawn(async move {
+            let listener = TcpListener::bind(addr).await?;
+            let shutdown = shutdown.clone();
 
-                loop {
-                    let accept = listener.accept();
+            loop {
+                let (socket, peer) = listener.accept().await?;
 
-                    let shutdown_clone = shutdown.clone();
-                    let shutdown_fut = shutdown.clone().wait();
-                    let (socket, peer) = tokio::select! {
-                        res = accept => res?,
-                        _ = shutdown_fut => {
-                            info!("Shutting down HTTPS");
-                            return Ok(())
-                        },
-                    };
-                    let upstream_connector = upstream_connector.clone();
-                    tokio::task::Builder::new().name("process_https").spawn(
-                        async move {
-                            let https = process_https(socket, peer, upstream_connector);
-                            let shutdown_fut = shutdown_clone.wait();
-                            tokio::select! {
-                                res = https => res,
-                                _ = shutdown_fut => {
-                                    info!("Shutting down HTTPS");
-                                    Ok(())
-                                },
-                            }
-                        }
-                        .to_gauge(&*TLS_CONNECTION_COUNT)
-                        .in_current_span(),
-                    )?;
-                }
+                let upstream_connector = upstream_connector.clone();
+                Task::new("process_https")
+                    .in_current_span()
+                    .with_gauge(&*TLS_CONNECTION_COUNT)
+                    .with_shutdown(shutdown.clone())
+                    .spawn(process_https(socket, peer, upstream_connector))?;
             }
-            .in_current_span(),
-        )
-        // todo: fix this
+        })
         .unwrap()
 }
 
@@ -88,7 +66,6 @@ async fn process_https(
     let mut upstream = upstream_connector.connect(sni, 443).await?;
     upstream.write_all(buffer).await?;
 
-    // todo: figure out if we have to do something with the result
     let res = copy_bidirectional(&mut stream, &mut upstream).await;
 
     match res {
@@ -151,13 +128,16 @@ fn parse_extensions(buffer: &[u8]) -> Result<Vec<TlsExtension>, Error> {
 #[instrument(skip_all, err)]
 fn parse_sni(extensions: Vec<TlsExtension>) -> Result<&str, Error> {
     let sni = extensions
-        .iter()
+        .into_iter()
         .filter_map(|ext| match ext {
             TlsExtension::SNI(sni) => Some(sni),
             _ => None,
         })
-        .next()
-        .ok_or(anyhow!("SNI Extension not found"))?;
+        .next();
+
+    let Some(sni) = sni else {
+        Err(anyhow!("SNI Extension not found"))?
+    };
 
     match sni.first() {
         Some((_, sni)) => Ok(std::str::from_utf8(sni)?),
