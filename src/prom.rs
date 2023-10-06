@@ -1,4 +1,5 @@
 use crate::shutdown::ShutdownReceiver;
+use crate::task::Task;
 use anyhow::Error;
 use http_body::Full;
 use hyper::service::{make_service_fn, service_fn};
@@ -50,13 +51,12 @@ pub(crate) fn loop_prom(shutdown: ShutdownReceiver) -> JoinHandle<Result<(), Err
         .with_graceful_shutdown(
             async move {
                 shutdown.wait().await;
-                info!("Shutting down PROM");
+                info!("Shutting down loop_prom");
             }
             .in_current_span(),
         );
 
-    tokio::task::Builder::new()
-        .name("prom")
+    Task::new("loop_prom")
         .spawn(async move {
             server.await?;
             Ok(())

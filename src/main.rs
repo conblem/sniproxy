@@ -33,6 +33,7 @@ static GLOBAL: Jemalloc = Jemalloc;
 mod http;
 mod prom;
 mod shutdown;
+mod task;
 mod tls;
 mod upstream;
 mod util;
@@ -69,6 +70,12 @@ struct Args {
 
     #[arg(long)]
     dns: Option<String>,
+
+    #[arg(long, default_value = "true")]
+    ipv4: bool,
+
+    #[arg(long, default_value = "false")]
+    ipv6: bool,
 }
 
 fn main() -> Result<(), Error> {

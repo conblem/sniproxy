@@ -123,14 +123,15 @@ struct GaugeFutureInner<'a, T, G: Atomic> {
     polled: bool,
 }
 
-pub(crate) trait ToGaugeFuture
+pub(crate) trait FutureExt: Future
 where
     Self: Sized,
 {
     fn to_gauge<G: Atomic>(self, gauge: &GenericGauge<G>) -> GaugeFuture<Self, G>;
+    fn with_shutdown<S>(self, shutdown: S) -> ShutdownFuture<Self, S>;
 }
 
-impl<T: Future> ToGaugeFuture for T {
+impl<T: Future> FutureExt for T {
     fn to_gauge<G: Atomic>(self, gauge: &GenericGauge<G>) -> GaugeFuture<Self, G> {
         GaugeFuture {
             inner: ClosureDropper {
@@ -142,5 +143,41 @@ impl<T: Future> ToGaugeFuture for T {
                 f: Some(DropGaugeFunction {}),
             },
         }
+    }
+
+    fn with_shutdown<S>(self, shutdown: S) -> ShutdownFuture<Self, S>
+where {
+        ShutdownFuture {
+            inner: self,
+            shutdown,
+        }
+    }
+}
+
+#[pin_project]
+pub(crate) struct ShutdownFuture<T, S> {
+    #[pin]
+    inner: T,
+    #[pin]
+    shutdown: S,
+}
+
+impl<T, S, O, E> Future for ShutdownFuture<T, S>
+where
+    O: Default,
+    T: Future<Output = Result<O, E>>,
+    S: Future,
+{
+    type Output = T::Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        let inner = this.inner;
+        let shutdown = this.shutdown;
+
+        if let Poll::Ready(_) = shutdown.poll(cx) {
+            return Poll::Ready(Ok(O::default()));
+        }
+        return inner.poll(cx);
     }
 }
