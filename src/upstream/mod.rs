@@ -1,19 +1,20 @@
 use anyhow::{anyhow, Error};
 use fast_socks5::client::{Config as FastSocksConfig, Socks5Stream};
-use fast_socks5::util::target_addr::{TargetAddr, ToTargetAddr};
+use fast_socks5::util::target_addr::ToTargetAddr;
 use fast_socks5::Socks5Command;
-use std::fmt::{Debug, Display, Formatter};
+use lookup_result::{LookupResult, LookupResultWithPort};
+use std::fmt::Debug;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use tokio::net::{lookup_host, TcpStream, ToSocketAddrs};
-use tracing_attributes::instrument;
+use tokio::net::{lookup_host, TcpStream};
+use tracing::instrument;
 use trust_dns_resolver::config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts};
-use trust_dns_resolver::lookup::{Ipv4Lookup, Ipv6Lookup};
-use trust_dns_resolver::lookup_ip::LookupIp;
 use trust_dns_resolver::TokioAsyncResolver;
 use url::Url;
 
 use crate::ARGS;
+
+mod lookup_result;
 
 #[derive(Debug, Clone)]
 enum SocksDnsResolution {
@@ -215,107 +216,5 @@ impl UpstreamResolver {
             .try_into()?;
 
         Ok(addr.with_port(port))
-    }
-}
-
-#[derive(Debug)]
-struct EmptyLookupResultError {}
-
-impl Display for EmptyLookupResultError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Empty lookup result")
-    }
-}
-
-impl std::error::Error for EmptyLookupResultError {}
-
-// todo: test this
-// should be quite easy
-#[derive(Debug)]
-enum LookupResult {
-    Ipv4(Ipv4Lookup),
-    Ipv6(Ipv6Lookup),
-    DualStack(LookupIp),
-    Static(IpAddr),
-    Tokio(Vec<SocketAddr>),
-}
-
-impl TryFrom<Vec<SocketAddr>> for LookupResult {
-    type Error = EmptyLookupResultError;
-
-    fn try_from(value: Vec<SocketAddr>) -> Result<Self, Self::Error> {
-        if value.len() == 0 {
-            return Err(EmptyLookupResultError {});
-        }
-        Ok(Self::Tokio(value))
-    }
-}
-
-impl TryFrom<Ipv4Lookup> for LookupResult {
-    type Error = EmptyLookupResultError;
-
-    fn try_from(value: Ipv4Lookup) -> Result<Self, Self::Error> {
-        if value.iter().next().is_none() {
-            return Err(EmptyLookupResultError {});
-        }
-        Ok(Self::Ipv4(value))
-    }
-}
-
-impl TryFrom<Ipv6Lookup> for LookupResult {
-    type Error = EmptyLookupResultError;
-
-    fn try_from(value: Ipv6Lookup) -> Result<Self, Self::Error> {
-        if value.iter().next().is_none() {
-            return Err(EmptyLookupResultError {});
-        }
-        Ok(Self::Ipv6(value))
-    }
-}
-
-impl TryFrom<LookupIp> for LookupResult {
-    type Error = EmptyLookupResultError;
-
-    fn try_from(value: LookupIp) -> Result<Self, Self::Error> {
-        if value.iter().next().is_none() {
-            return Err(EmptyLookupResultError {});
-        }
-        Ok(Self::DualStack(value))
-    }
-}
-
-impl LookupResult {
-    fn with_port(self, port: u16) -> LookupResultWithPort {
-        let socket_addrs = match self {
-            Self::Ipv4(lookup) => lookup.iter().map(|ip| (ip.octets(), port).into()).collect(),
-            Self::Ipv6(lookup) => lookup.iter().map(|ip| (ip.octets(), port).into()).collect(),
-            Self::DualStack(lookup) => lookup.iter().map(|ip| (ip, port).into()).collect(),
-            Self::Static(ip) => vec![(ip, port).into()],
-            Self::Tokio(mut ips) => {
-                for ip in &mut ips {
-                    ip.set_port(port)
-                }
-                ips
-            }
-        };
-        LookupResultWithPort { socket_addrs }
-    }
-}
-
-#[derive(Debug)]
-struct LookupResultWithPort {
-    socket_addrs: Vec<SocketAddr>,
-}
-
-impl LookupResultWithPort {
-    fn addrs(&self) -> impl ToSocketAddrs + '_ {
-        &self.socket_addrs[..]
-    }
-}
-
-impl ToTargetAddr for LookupResultWithPort {
-    // vec is never empty so we can just index directly
-    fn to_target_addr(&self) -> std::io::Result<TargetAddr> {
-        Ok(TargetAddr::Ip(self.socket_addrs[0]))
     }
 }

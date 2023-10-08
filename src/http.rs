@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Error};
+use anyhow::{anyhow, Error, Result};
 use hyper::client::connect::Connect;
 use hyper::http::uri::Scheme;
 use hyper::rt::Executor;
@@ -11,8 +11,7 @@ use std::convert::Infallible;
 use std::future::{ready, Future};
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
-use tracing::{info, info_span, Instrument, Span};
-use tracing_attributes::instrument;
+use tracing::{info, info_span, instrument, Instrument, Span};
 
 use crate::shutdown::ShutdownReceiver;
 use crate::task::Task;
@@ -108,7 +107,7 @@ where
 }
 
 #[instrument(skip_all, fields(req = ?req), err)]
-async fn request<C>(mut req: Request<Body>, client: Client<C>) -> Result<Response<Body>, Error>
+async fn request<C>(mut req: Request<Body>, client: Client<C>) -> Result<Response<Body>>
 where
     C: Connect + Clone + Send + Sync + 'static,
 {

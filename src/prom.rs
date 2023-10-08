@@ -1,6 +1,6 @@
 use crate::shutdown::ShutdownReceiver;
 use crate::task::Task;
-use anyhow::Error;
+use anyhow::Result;
 use http_body::Full;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Method, Request, Response, Server};
@@ -9,8 +9,7 @@ use std::convert::Infallible;
 use std::io::Cursor;
 use std::net::SocketAddr;
 use tokio::task::JoinHandle;
-use tracing::{info, Instrument};
-use tracing_attributes::instrument;
+use tracing::{info, instrument, Instrument};
 
 async fn handle(req: Request<Body>) -> Result<Response<Full<Cursor<Vec<u8>>>>, Infallible> {
     if req.method() != Method::GET {
@@ -41,7 +40,7 @@ fn error_response(error: &'static str) -> Response<Full<Cursor<Vec<u8>>>> {
 }
 
 #[instrument(skip_all)]
-pub(crate) fn loop_prom(shutdown: ShutdownReceiver) -> JoinHandle<Result<(), Error>> {
+pub(crate) fn loop_prom(shutdown: ShutdownReceiver) -> JoinHandle<Result<()>> {
     let addr = SocketAddr::from(([127, 0, 0, 1], 9090));
 
     let make_service = make_service_fn(|_conn| async { Ok::<_, Infallible>(service_fn(handle)) });
