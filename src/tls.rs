@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Error};
+use anyhow::{anyhow, bail, Result};
 use once_cell::sync::Lazy;
 use prometheus::{register_int_gauge, IntGauge};
 use std::io::ErrorKind;
@@ -25,7 +25,7 @@ static TLS_CONNECTION_COUNT: Lazy<IntGauge> =
 pub(crate) fn loop_https(
     upstream_connector: UpstreamConnector,
     shutdown: ShutdownReceiver,
-) -> JoinHandle<Result<(), Error>> {
+) -> JoinHandle<Result<()>> {
     let addr = format!("{}:{}", ARGS.listen, ARGS.tls_port);
 
     Task::new("loop_https")
@@ -54,7 +54,7 @@ async fn process_https(
     mut stream: TcpStream,
     _peer: SocketAddr,
     upstream_connector: UpstreamConnector,
-) -> Result<(), Error> {
+) -> Result<()> {
     let mut buffer = [0u8; 1024];
     let n = stream.read_buf(&mut buffer.as_mut()).await?;
     let buffer = &buffer[..n];
@@ -106,18 +106,18 @@ where
 }
 
 #[instrument(skip_all, err)]
-fn parse_extensions(buffer: &[u8]) -> Result<Vec<TlsExtension>, Error> {
+fn parse_extensions(buffer: &[u8]) -> Result<Vec<TlsExtension>> {
     let Ok((_, plaintext)) = parse_tls_plaintext(buffer) else {
-        Err(anyhow!("Failed to parse TLS plaintext"))?
+        bail!("Failed to parse TLS plaintext");
     };
     let Some(TlsMessage::Handshake(handshake)) = plaintext.msg.first() else {
-        Err(anyhow!("No TLS handshake found"))?
+        bail!("No TLS handshake found");
     };
     let TlsMessageHandshake::ClientHello(client_hello) = handshake else {
-        Err(anyhow!("No ClientHello found"))?
+        bail!("No ClientHello found");
     };
     let Some(extensions) = client_hello.ext else {
-        Err(anyhow!("No extensions found"))?
+        bail!("No extensions found");
     };
 
     parse_tls_client_hello_extensions(extensions)
@@ -126,7 +126,7 @@ fn parse_extensions(buffer: &[u8]) -> Result<Vec<TlsExtension>, Error> {
 }
 
 #[instrument(skip_all, err)]
-fn parse_sni(extensions: Vec<TlsExtension>) -> Result<&str, Error> {
+fn parse_sni(extensions: Vec<TlsExtension>) -> Result<&str> {
     let sni = extensions
         .into_iter()
         .filter_map(|ext| match ext {
@@ -136,11 +136,11 @@ fn parse_sni(extensions: Vec<TlsExtension>) -> Result<&str, Error> {
         .next();
 
     let Some(sni) = sni else {
-        Err(anyhow!("SNI Extension not found"))?
+        bail!("SNI Extension not found");
     };
 
     match sni.first() {
         Some((_, sni)) => Ok(std::str::from_utf8(sni)?),
-        None => Err(anyhow!("Couldn't parse SNI Name"))?,
+        None => bail!("Couldn't parse SNI Name"),
     }
 }

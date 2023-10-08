@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Error};
+use anyhow::{anyhow, Error, Result};
 use hyper::client::connect::Connect;
 use hyper::http::uri::Scheme;
 use hyper::rt::Executor;
@@ -108,7 +108,7 @@ where
 }
 
 #[instrument(skip_all, fields(req = ?req), err)]
-async fn request<C>(mut req: Request<Body>, client: Client<C>) -> Result<Response<Body>, Error>
+async fn request<C>(mut req: Request<Body>, client: Client<C>) -> Result<Response<Body>>
 where
     C: Connect + Clone + Send + Sync + 'static,
 {
