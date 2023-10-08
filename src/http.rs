@@ -11,8 +11,7 @@ use std::convert::Infallible;
 use std::future::{ready, Future};
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
-use tracing::{info, info_span, Instrument, Span};
-use tracing_attributes::instrument;
+use tracing::{info, info_span, instrument, Instrument, Span};
 
 use crate::shutdown::ShutdownReceiver;
 use crate::task::Task;

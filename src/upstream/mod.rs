@@ -7,7 +7,7 @@ use std::fmt::Debug;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::net::{lookup_host, TcpStream};
-use tracing_attributes::instrument;
+use tracing::instrument;
 use trust_dns_resolver::config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts};
 use trust_dns_resolver::TokioAsyncResolver;
 use url::Url;

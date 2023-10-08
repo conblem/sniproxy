@@ -11,8 +11,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 use tracing::field::display;
-use tracing::{info, Span};
-use tracing_attributes::instrument;
+use tracing::{info, instrument, Span};
 
 use crate::shutdown::ShutdownReceiver;
 use crate::task::Task;

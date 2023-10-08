@@ -9,8 +9,7 @@ use std::convert::Infallible;
 use std::io::Cursor;
 use std::net::SocketAddr;
 use tokio::task::JoinHandle;
-use tracing::{info, Instrument};
-use tracing_attributes::instrument;
+use tracing::{info, instrument, Instrument};
 
 async fn handle(req: Request<Body>) -> Result<Response<Full<Cursor<Vec<u8>>>>, Infallible> {
     if req.method() != Method::GET {
