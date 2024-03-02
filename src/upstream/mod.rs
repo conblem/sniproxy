@@ -62,10 +62,12 @@ impl UpstreamConnector {
         let Some(socks_host) = socks.host_str() else {
             Err(anyhow!("Invalid socks url"))?
         };
-        let socks_addr = self
-            .resolver
-            .lookup_socketaddr(socks_host, socks_port)
-            .await?;
+        let lookup_result: LookupResult = lookup_host((socks_host, socks_port))
+            .await?
+            .collect::<Vec<_>>()
+            .try_into()?;
+
+        let socks_addr = lookup_result.with_port(socks_port);
 
         Ok(SocksConfig {
             dns_resolution,
