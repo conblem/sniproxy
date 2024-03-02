@@ -30,23 +30,31 @@ impl Task<AtomicI64> {
 }
 
 impl<G: Atomic> Task<G> {
-    pub(crate) fn with_shutdown(mut self, shutdown: ShutdownReceiver) -> Self {
-        self.shutdown = Some(shutdown);
+    pub(crate) fn with_shutdown(mut self, shutdown: impl Into<Option<ShutdownReceiver>>) -> Self {
+        self.shutdown = shutdown.into();
         self
     }
 
     // a little more code so we can change the type of the gauge after the fact
-    pub(crate) fn with_gauge<T: Atomic>(self, gauge: &'static GenericGauge<T>) -> Task<T> {
+    pub(crate) fn with_gauge<T: Atomic>(
+        self,
+        gauge: impl Into<Option<&'static GenericGauge<T>>>,
+    ) -> Task<T> {
         Task {
             name: self.name,
             shutdown: self.shutdown,
-            gauge: Some(gauge),
+            gauge: gauge.into(),
             span: self.span,
         }
     }
 
     pub(crate) fn in_current_span(mut self) -> Self {
         self.span = Some(Span::current());
+        self
+    }
+
+    pub(crate) fn with_span(mut self, span: impl Into<Option<Span>>) -> Self {
+        self.span = span.into();
         self
     }
 
@@ -58,10 +66,10 @@ impl<G: Atomic> Task<G> {
         E: 'static,
     {
         let shutdown_factory = |shutdown: ShutdownReceiver| {
-            let name = self.name.to_owned();
+            let msg = format!("Shutting down {}", self.name);
             async move {
                 shutdown.wait().await;
-                info!("Shutting down {}", name);
+                info!(msg);
             }
         };
 
@@ -80,8 +88,8 @@ impl<G: Atomic> Task<G> {
 // while keeping typings working
 #[pin_project(project = EitherEnum)]
 enum Either<L, R> {
-    Left(#[pin] L),
-    Right(#[pin] R),
+    Head(#[pin] L),
+    Tail(#[pin] R),
 }
 
 impl<L: Future, R: Future<Output = L::Output>> Future for Either<L, R> {
@@ -89,30 +97,28 @@ impl<L: Future, R: Future<Output = L::Output>> Future for Either<L, R> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.project() {
-            EitherEnum::Left(l) => l.poll(cx),
-            EitherEnum::Right(r) => r.poll(cx),
+            EitherEnum::Head(l) => l.poll(cx),
+            EitherEnum::Tail(r) => r.poll(cx),
         }
     }
 }
 
 impl Either<(), ()> {
     fn new<T: Future>(fut: T) -> Either<T, Ready<T::Output>> {
-        Either::Left(fut)
+        Either::Head(fut)
     }
 }
 
 impl<L: Future, R: Future<Output = L::Output>> Either<L, R> {
-    fn conditional_extend<M: FnOnce(Self, I) -> N, N, I>(
-        self,
-        option: Option<I>,
-        mapper: M,
-    ) -> Either<N, Either<L, R>>
+    fn conditional_extend<M, N, O, I>(self, option: O, mapper: M) -> Either<N, Either<L, R>>
     where
+        O: Into<Option<I>>,
+        M: FnOnce(Self, I) -> N,
         N: Future<Output = L::Output>,
     {
-        match option {
-            Some(input) => Either::Left(mapper(self, input)),
-            None => Either::Right(self),
+        match option.into() {
+            Some(input) => Either::Head(mapper(self, input)),
+            None => Either::Tail(self),
         }
     }
 }

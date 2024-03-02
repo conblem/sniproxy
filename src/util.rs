@@ -66,7 +66,7 @@ impl<T, G: Atomic> DropFunction<GaugeFutureInner<'_, T, G>> for DropGaugeFunctio
     fn drop_function(self, drop: Pin<&mut GaugeFutureInner<T, G>>) {
         let this = drop.project();
         // only dec if the future has been polled
-        // and in turn the gauge bin incremented
+        // and in turn the gauge been incremented
         if *this.polled {
             this.gauge.dec();
         }

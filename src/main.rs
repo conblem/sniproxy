@@ -1,4 +1,4 @@
-use anyhow::Error;
+use anyhow::Result;
 use clap::Parser;
 use once_cell::sync::Lazy;
 use opentelemetry::KeyValue;
@@ -6,8 +6,9 @@ use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::runtime::Tokio;
 use opentelemetry_sdk::{trace, Resource};
 use opentelemetry_semantic_conventions::resource::{SERVICE_NAME, SERVICE_VERSION};
+use std::convert::Infallible;
 use std::net::IpAddr;
-use tokio::runtime::{Handle, Runtime};
+use tokio::runtime::Runtime;
 use tracing::{info, info_span, Instrument, Level, Subscriber};
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
@@ -23,6 +24,7 @@ use tikv_jemallocator::Jemalloc;
 use crate::http::loop_http;
 use crate::prom::loop_prom;
 use crate::shutdown::{ShutdownReceiver, ShutdownTask};
+use crate::task::Task;
 use crate::tls::loop_https;
 use crate::upstream::UpstreamConnector;
 
@@ -78,7 +80,7 @@ struct Args {
     ipv6: bool,
 }
 
-fn main() -> Result<(), Error> {
+fn main() -> Result<()> {
     let rt = Runtime::new()?;
     let _enter = rt.enter();
 
@@ -88,7 +90,7 @@ fn main() -> Result<(), Error> {
 
     info!("Starting up");
 
-    let shutdown = init_shutdown(rt.handle())?;
+    let shutdown = init_shutdown()?;
 
     rt.block_on(
         async move {
@@ -179,12 +181,14 @@ fn otel_config() -> trace::Config {
     trace::config().with_resource(Resource::new(values))
 }
 
-fn init_shutdown(handle: &Handle) -> Result<ShutdownReceiver, Error> {
-    let (shtudown_task, shutdown) = ShutdownTask::new();
-    tokio::task::Builder::new().name("shutdown").spawn_on(
-        shtudown_task.wait().instrument(info_span!("shutdown")),
-        handle,
-    )?;
+fn init_shutdown() -> Result<ShutdownReceiver> {
+    let (shutdown_task, shutdown) = ShutdownTask::new();
+    Task::new("shutdown")
+        .with_span(info_span!("shutdown"))
+        .spawn(async move {
+            shutdown_task.wait().await;
+            Ok(()) as Result<_, Infallible>
+        })?;
 
     Ok(shutdown)
 }

@@ -11,14 +11,13 @@ jemalloc = ["tikv-jemallocator"]
 console = ["console-subscriber", "opentelemetry", "opentelemetry_sdk","opentelemetry-otlp", "tracing-opentelemetry", "opentelemetry-semantic-conventions", "tracing-subscriber/registry"]
 
 [dependencies]
-tokio = { version = "1.32.0", features = ["full", "tracing"] }
+tokio = { version = "1.32.0", features = ["rt-multi-thread", "net","macros", "sync", "signal", "parking_lot", "tracing"] }
 tls-parser = { version = "0.11.0", features = ["serialize"] }
 fast-socks5 = "0.9.1"
-trust-dns-resolver = { version = "0.23.0" }
+trust-dns-resolver = { version = "0.23.0", default-features = false, features = ["tokio-runtime"] }
 clap = { version = "4.4.2", features = ["derive"] }
 url = "2.4.1"
-tracing = "0.1.37"
-tracing-attributes = "0.1.26"
+tracing = { version = "0.1.37", features = ["attributes"]}
 tracing-subscriber = { version = "0.3", features = ["parking_lot"] }
 # only h1 for http needed as h2 would always be over tls
 hyper = { version = "0.14.27", features = ["server", "http1", "client", "tcp"] , default-features = false }
