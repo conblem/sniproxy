@@ -1,10 +1,10 @@
 use anyhow::Result;
 use fast_socks5::util::target_addr::{TargetAddr, ToTargetAddr};
+use hickory_resolver::lookup::{Ipv4Lookup, Ipv6Lookup};
+use hickory_resolver::lookup_ip::LookupIp;
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
 use tokio::net::ToSocketAddrs;
-use trust_dns_resolver::lookup::{Ipv4Lookup, Ipv6Lookup};
-use trust_dns_resolver::lookup_ip::LookupIp;
 
 // todo: test this
 // should be quite easy
@@ -112,12 +112,12 @@ impl ToTargetAddr for LookupResultWithPort {
 mod tests {
     use super::*;
     use anyhow::Error;
+    use hickory_resolver::lookup::Lookup;
+    use hickory_resolver::proto::op::Query;
+    use hickory_resolver::proto::rr::RData;
     use std::net::{Ipv4Addr, Ipv6Addr};
     use std::sync::Arc;
     use tokio::net::lookup_host;
-    use trust_dns_resolver::lookup::Lookup;
-    use trust_dns_resolver::proto::op::Query;
-    use trust_dns_resolver::proto::rr::RData;
 
     fn empty_lookup<T: From<Lookup>>() -> T {
         return Lookup::new_with_max_ttl(Query::new(), Arc::new([])).into();
