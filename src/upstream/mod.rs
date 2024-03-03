@@ -1,15 +1,21 @@
-use anyhow::{anyhow, Error};
+use anyhow::{anyhow, Error, Result};
 use fast_socks5::client::{Config as FastSocksConfig, Socks5Stream};
-use fast_socks5::util::target_addr::ToTargetAddr;
+use fast_socks5::util::target_addr::{TargetAddr, ToTargetAddr};
 use fast_socks5::Socks5Command;
+use hickory_resolver::config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts};
+use hickory_resolver::name_server::{GenericConnector, RuntimeProvider, TokioRuntimeProvider};
+use hickory_resolver::proto::iocompat::AsyncIoTokioAsStd;
+use hickory_resolver::proto::TokioTime;
+use hickory_resolver::{AsyncResolver, TokioHandle};
 use lookup_result::{LookupResult, LookupResultWithPort};
 use std::fmt::Debug;
+use std::future::{ready, Future};
+use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr};
+use std::pin::Pin;
 use std::sync::Arc;
-use tokio::net::{lookup_host, TcpStream};
+use tokio::net::{lookup_host, TcpStream, UdpSocket};
 use tracing::instrument;
-use trust_dns_resolver::config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts};
-use trust_dns_resolver::TokioAsyncResolver;
 use url::Url;
 
 use crate::ARGS;
@@ -31,27 +37,69 @@ struct SocksConfig {
 #[derive(Clone)]
 pub(crate) struct UpstreamConnector {
     resolver: UpstreamResolver,
-    socks_config: Option<Arc<SocksConfig>>,
+    socks: Option<SocksUpstreamConnector>,
 }
 
 impl UpstreamConnector {
     pub(crate) async fn new() -> Result<Self, Error> {
-        let mut this = Self {
-            resolver: UpstreamResolver::new().await?,
-            socks_config: None,
+        let socks = match &ARGS.socks {
+            Some(socks) => Some(SocksUpstreamConnector::new(socks).await?),
+            None => None,
         };
+        let runtime_provider = RuntimeProviderWithSocks::new(socks.clone());
 
-        let Some(socks) = &ARGS.socks else {
-            return Ok(this);
-        };
-
-        let socks_config = this.socks_config(socks).await?;
-        this.socks_config = Some(Arc::new(socks_config));
-
-        Ok(this)
+        Ok(Self {
+            resolver: UpstreamResolver::new(runtime_provider).await?,
+            socks,
+        })
     }
 
-    async fn socks_config(&self, socks: &Url) -> Result<SocksConfig, Error> {
+    #[instrument(skip_all, fields(port = port), err)]
+    pub(crate) async fn connect(&self, sni: &str, port: u16) -> Result<TcpStream, Error> {
+        let Some(socks) = &self.socks else {
+            return self.upstream_direct(sni, port).await;
+        };
+
+        let target = match socks.config().dns_resolution {
+            SocksDnsResolution::Local => self
+                .resolver
+                .lookup_socketaddr(sni, port)
+                .await?
+                .to_target_addr()?,
+            SocksDnsResolution::Socks => (sni, port).to_target_addr()?,
+        };
+        return socks.connect(target).await;
+    }
+
+    #[instrument(skip_all, err)]
+    async fn upstream_direct(&self, sni: &str, port: u16) -> Result<TcpStream, Error> {
+        let target = self.resolver.lookup_socketaddr(sni, port).await?;
+
+        let upstream_conn = happy_eyeballs::tokio::connect(target.addrs()).await?;
+
+        Ok(upstream_conn)
+    }
+}
+
+#[derive(Clone)]
+struct SocksUpstreamConnector {
+    socks_config: Arc<SocksConfig>,
+}
+
+impl SocksUpstreamConnector {
+    fn config(&self) -> &SocksConfig {
+        &self.socks_config
+    }
+
+    async fn new(socks: &Url) -> Result<Self, Error> {
+        let socks_config = SocksUpstreamConnector::socks_config(socks).await?;
+
+        Ok(Self {
+            socks_config: Arc::new(socks_config),
+        })
+    }
+
+    async fn socks_config(socks: &Url) -> Result<SocksConfig> {
         let dns_resolution = match socks.scheme() {
             "socks5" => SocksDnsResolution::Local,
             "socks5h" => SocksDnsResolution::Socks,
@@ -75,43 +123,12 @@ impl UpstreamConnector {
         })
     }
 
-    #[instrument(skip_all, fields(port = port), err)]
-    pub(crate) async fn connect(&self, sni: &str, port: u16) -> Result<TcpStream, Error> {
-        match &self.socks_config {
-            Some(socks_config) => self.upstream_socks(sni, port, socks_config).await,
-            None => self.upstream_direct(sni, port).await,
-        }
-    }
-
-    #[instrument(skip_all, err)]
-    async fn upstream_direct(&self, sni: &str, port: u16) -> Result<TcpStream, Error> {
-        let target = self.resolver.lookup_socketaddr(sni, port).await?;
-
-        let upstream_conn = happy_eyeballs::tokio::connect(target.addrs()).await?;
-
-        Ok(upstream_conn)
-    }
-
     // maybe add retry logic for socks if first target addr fails
-    #[instrument(skip_all, fields(socks_config = ?socks_config), err)]
-    async fn upstream_socks(
-        &self,
-        sni: &str,
-        port: u16,
-        socks_config: &SocksConfig,
-    ) -> Result<TcpStream, Error> {
-        let target = match socks_config.dns_resolution {
-            SocksDnsResolution::Local => self
-                .resolver
-                .lookup_socketaddr(sni, port)
-                .await?
-                .to_target_addr()?,
-            SocksDnsResolution::Socks => (sni, port).to_target_addr()?,
-        };
-
+    #[instrument(skip_all, fields(target = ?target), err)]
+    async fn connect(&self, target: TargetAddr) -> Result<TcpStream, Error> {
         // we could use happy eyeballs here this is not really common for
         // socks tho as far as I am aware for socks
-        let upstream_conn = TcpStream::connect(socks_config.socks_addr.addrs()).await?;
+        let upstream_conn = TcpStream::connect(self.socks_config.socks_addr.addrs()).await?;
 
         let mut upstream =
             Socks5Stream::use_stream(upstream_conn, None, FastSocksConfig::default()).await?;
@@ -146,16 +163,18 @@ impl DnsLookupMode {
     }
 }
 
+type CustomAsyncResolver = AsyncResolver<GenericConnector<RuntimeProviderWithSocks>>;
+
 #[derive(Clone)]
 struct UpstreamResolver {
-    resolver: Option<Arc<TokioAsyncResolver>>,
+    resolver: Option<Arc<CustomAsyncResolver>>,
     dns_lookup_mode: DnsLookupMode,
 }
 
 impl UpstreamResolver {
-    async fn new() -> Result<Self, Error> {
+    async fn new(runtime_provider: RuntimeProviderWithSocks) -> Result<Self, Error> {
         let resolver = match &ARGS.dns {
-            Some(dns) => Some(Self::create_resolver(dns).await?),
+            Some(dns) => Some(Self::create_resolver(dns, runtime_provider).await?),
             None => None,
         };
 
@@ -171,20 +190,25 @@ impl UpstreamResolver {
             dns_lookup_mode,
         })
     }
-    async fn create_resolver(dns: &str) -> Result<TokioAsyncResolver, Error> {
+    async fn create_resolver(
+        dns: &str,
+        runtime_provider: RuntimeProviderWithSocks,
+    ) -> Result<CustomAsyncResolver> {
         let dns_server = lookup_host(dns).await?.next();
         let Some(dns_server) = dns_server else {
             Err(anyhow!("No IP for DNS Server found"))?
         };
-        let name_server_config = NameServerConfig::new(dns_server, Protocol::Udp);
+        let name_server_config = NameServerConfig::new(dns_server, Protocol::Tcp);
 
         let mut resolver_config = ResolverConfig::new();
         resolver_config.add_name_server(name_server_config);
 
-        let mut opts = ResolverOpts::default();
-        opts.try_tcp_on_error = true;
-
-        Ok(TokioAsyncResolver::tokio(resolver_config, opts))
+        let connector = GenericConnector::new(runtime_provider);
+        Ok(AsyncResolver::new(
+            resolver_config,
+            ResolverOpts::default(),
+            connector,
+        ))
     }
 
     #[instrument(skip_all, ret, err)]
@@ -218,5 +242,59 @@ impl UpstreamResolver {
             .try_into()?;
 
         Ok(addr.with_port(port))
+    }
+}
+
+#[derive(Clone)]
+struct RuntimeProviderWithSocks {
+    socks: Option<SocksUpstreamConnector>,
+    inner: TokioRuntimeProvider,
+}
+
+impl RuntimeProviderWithSocks {
+    fn new(socks: Option<SocksUpstreamConnector>) -> Self {
+        Self {
+            socks,
+            inner: TokioRuntimeProvider::default(),
+        }
+    }
+}
+
+impl RuntimeProvider for RuntimeProviderWithSocks {
+    type Handle = TokioHandle;
+    type Timer = TokioTime;
+    type Udp = UdpSocket;
+    type Tcp = AsyncIoTokioAsStd<TcpStream>;
+
+    fn create_handle(&self) -> Self::Handle {
+        self.inner.create_handle()
+    }
+
+    fn connect_tcp(
+        &self,
+        server_addr: SocketAddr,
+    ) -> Pin<Box<dyn Send + Future<Output = std::io::Result<Self::Tcp>>>> {
+        let Some(socks) = &self.socks else {
+            return self.inner.connect_tcp(server_addr);
+        };
+        let socks = socks.clone();
+        Box::pin(async move {
+            let target_addr = server_addr.to_target_addr()?;
+            match socks.connect(target_addr).await {
+                Ok(stream) => Ok(AsyncIoTokioAsStd(stream)),
+                Err(err) => Err(std::io::Error::new(ErrorKind::Other, err)),
+            }
+        })
+    }
+
+    fn bind_udp(
+        &self,
+        _local_addr: SocketAddr,
+        _server_addr: SocketAddr,
+    ) -> Pin<Box<dyn Send + Future<Output = std::io::Result<Self::Udp>>>> {
+        Box::pin(ready(Err(std::io::Error::new(
+            ErrorKind::Other,
+            "UDP not supported",
+        ))))
     }
 }
