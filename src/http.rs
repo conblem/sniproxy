@@ -1,18 +1,20 @@
 use anyhow::{anyhow, Error, Result};
-use hyper::client::connect::Connect;
+use hyper::body::Incoming;
 use hyper::http::uri::Scheme;
 use hyper::rt::Executor;
-use hyper::server::conn::AddrStream;
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Client, Request, Response, Server, Uri};
+use hyper::service::{service_fn, HttpService};
+use hyper::{Request, Response, Uri};
+use hyper_util::client::legacy::connect::Connect;
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::TokioIo;
 use once_cell::sync::Lazy;
 use prometheus::{register_int_gauge, IntGauge};
-use std::convert::Infallible;
-use std::future::{ready, Future};
+use std::future::Future;
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
-use tracing::{info, info_span, instrument, Instrument, Span};
+use tracing::{info_span, instrument, Instrument, Span};
 
+use crate::server::Server;
 use crate::shutdown::ShutdownReceiver;
 use crate::task::Task;
 use crate::util::FutureExt;
@@ -29,41 +31,33 @@ pub(crate) fn loop_http(
 ) -> JoinHandle<Result<(), Error>> {
     let connector = connector_factory(upstream_connector.clone());
 
-    let client = Client::builder()
-        .executor(SpanExecutor::from(info_span!("client_background")))
-        .build::<_, Body>(connector);
+    let client = Client::builder(SpanExecutor::from(info_span!("client_background")))
+        .build::<_, Incoming>(connector);
 
     Task::new("loop_http")
         .in_current_span()
         .spawn(async move {
-            let addr = format!("{}:{}", ARGS.listen, ARGS.http_port).parse()?;
-
-            let span = Span::current();
-            let make_svc = make_service_fn(|_socket: &AddrStream| {
-                let span = span.clone();
-                let client = client.clone();
-                ready(Ok::<_, Infallible>(service_fn(move |req| {
-                    request(req, client.clone())
-                        .to_gauge(&*HTTP_CONNECTION_COUNT)
-                        .instrument(info_span!(parent: span.clone(), "client"))
-                })))
-            });
-
-            Server::bind(&addr)
-                .executor(SpanExecutor::from(info_span!("server_background")))
-                .serve(make_svc)
-                .with_graceful_shutdown(
-                    async move {
-                        shutdown.wait().await;
-                        info!("Shutting down loop_http");
-                    }
-                    .in_current_span(),
-                )
-                .await?;
-            Ok(())
+            let addr = format!("{}:{}", ARGS.listen, ARGS.http_port);
+            let service = service_factory(&client);
+            Server::new(service, shutdown).listen(addr).await
         })
         // todo: fix this
         .unwrap()
+}
+
+fn service_factory<C>(
+    client: &Client<C, Incoming>,
+) -> impl HttpService<Incoming, ResBody = Incoming, Future = impl Send> + Clone
+where
+    C: Connect + Clone + Send + Sync + 'static,
+{
+    let span = Span::current();
+    let client = client.clone();
+    service_fn(move |req| {
+        request(req, client.clone())
+            .to_gauge(&*HTTP_CONNECTION_COUNT)
+            .instrument(info_span!(parent: &span.clone(), "client"))
+    })
 }
 
 fn connector_factory(upstream_connector: UpstreamConnector) -> impl Connect + Clone {
@@ -74,7 +68,8 @@ fn connector_factory(upstream_connector: UpstreamConnector) -> impl Connect + Cl
         Box::pin(
             async move {
                 let host = req.host().ok_or(anyhow!("missing host"))?;
-                upstream_connector.connect(host, 80).await
+                let stream = upstream_connector.connect(host, 80).await?;
+                Ok::<_, Error>(TokioIo::new(stream))
             }
             .instrument(span.clone()),
         )
@@ -107,7 +102,10 @@ where
 }
 
 #[instrument(skip_all, fields(req = ?req), err)]
-async fn request<C>(mut req: Request<Body>, client: Client<C>) -> Result<Response<Body>>
+async fn request<C>(
+    mut req: Request<Incoming>,
+    client: Client<C, Incoming>,
+) -> Result<Response<Incoming>>
 where
     C: Connect + Clone + Send + Sync + 'static,
 {

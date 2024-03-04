@@ -1,17 +1,19 @@
+use crate::server::Server;
 use crate::shutdown::ShutdownReceiver;
 use crate::task::Task;
 use anyhow::Result;
-use http_body::Full;
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Method, Request, Response, Server};
+use http_body_util::Full;
+use hyper::body::Incoming;
+use hyper::service::service_fn;
+use hyper::{Method, Request, Response};
 use prometheus::{Encoder, TextEncoder};
 use std::convert::Infallible;
 use std::io::Cursor;
 use std::net::SocketAddr;
 use tokio::task::JoinHandle;
-use tracing::{info, instrument, Instrument};
+use tracing::instrument;
 
-async fn handle(req: Request<Body>) -> Result<Response<Full<Cursor<Vec<u8>>>>, Infallible> {
+async fn handle(req: Request<Incoming>) -> Result<Response<Full<Cursor<Vec<u8>>>>, Infallible> {
     if req.method() != Method::GET {
         return Ok(error_response("Method not allowed"));
     }
@@ -43,22 +45,7 @@ fn error_response(error: &'static str) -> Response<Full<Cursor<Vec<u8>>>> {
 pub(crate) fn loop_prom(shutdown: ShutdownReceiver) -> JoinHandle<Result<()>> {
     let addr = SocketAddr::from(([127, 0, 0, 1], 9090));
 
-    let make_service = make_service_fn(|_conn| async { Ok::<_, Infallible>(service_fn(handle)) });
-
-    let server = Server::bind(&addr)
-        .serve(make_service)
-        .with_graceful_shutdown(
-            async move {
-                shutdown.wait().await;
-                info!("Shutting down loop_prom");
-            }
-            .in_current_span(),
-        );
-
     Task::new("loop_prom")
-        .spawn(async move {
-            server.await?;
-            Ok(())
-        })
+        .spawn(Server::new(service_fn(handle), shutdown).listen(addr))
         .unwrap()
 }

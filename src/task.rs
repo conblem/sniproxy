@@ -65,7 +65,7 @@ impl<G: Atomic> Task<G> {
         O: Default + 'static,
         E: 'static,
     {
-        let shutdown_factory = |shutdown: ShutdownReceiver| {
+        let shutdown_factory = |mut shutdown: ShutdownReceiver| {
             let msg = format!("Shutting down {}", self.name);
             async move {
                 shutdown.wait().await;
