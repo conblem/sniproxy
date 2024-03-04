@@ -56,8 +56,7 @@ impl UpstreamConnector {
 
     #[instrument(skip_all, fields(port = port), err)]
     pub(crate) async fn connect(&self, sni: &str, port: u16) -> Result<TcpStream, Error> {
-        let is_excluded = &ARGS.socks_exclude.iter().find(|exclude| sni.eq(*exclude));
-        if is_excluded.is_some() {
+        if IsSocksExcluded::is_sni_excluded(sni) {
             info!("Excluded from socks");
             return self.upstream_direct(sni, port).await;
         }
@@ -283,10 +282,7 @@ impl RuntimeProvider for RuntimeProviderWithSocks {
             return self.inner.connect_tcp(server_addr);
         };
 
-        let sni = server_addr.ip().to_string();
-        let is_excluded = &ARGS.socks_exclude.iter().find(|exclude| sni.eq(*exclude));
-        if is_excluded.is_some() {
-            info!("Excluded from socks");
+        if IsSocksExcluded::is_addr_excluded(&server_addr) {
             return self.inner.connect_tcp(server_addr);
         }
 
@@ -309,5 +305,21 @@ impl RuntimeProvider for RuntimeProviderWithSocks {
             ErrorKind::Other,
             "UDP not supported",
         ))))
+    }
+}
+
+struct IsSocksExcluded;
+
+impl IsSocksExcluded {
+    fn is_sni_excluded(sni: &str) -> bool {
+        ARGS.socks_exclude
+            .iter()
+            .find(|exclude| sni.eq(*exclude))
+            .is_some()
+    }
+
+    fn is_addr_excluded(addr: &SocketAddr) -> bool {
+        let sni = addr.ip().to_string();
+        Self::is_sni_excluded(&sni)
     }
 }
