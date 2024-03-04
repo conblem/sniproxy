@@ -51,6 +51,9 @@ struct Args {
     #[arg(long)]
     socks: Option<Url>,
 
+    #[arg(long)]
+    socks_exclude: Vec<String>,
+
     #[arg(long, default_value = "443")]
     tls_port: u16,
 

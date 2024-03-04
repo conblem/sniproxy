@@ -1563,6 +1563,7 @@ dependencies = [
  "opentelemetry_sdk",
  "pin-project",
  "prometheus",
+ "rand",
  "tikv-jemallocator",
  "tls-parser",
  "tokio",

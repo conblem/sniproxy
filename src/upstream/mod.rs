@@ -15,7 +15,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::net::{lookup_host, TcpStream, UdpSocket};
-use tracing::instrument;
+use tracing::{info, instrument};
 use url::Url;
 
 use crate::ARGS;
@@ -56,6 +56,11 @@ impl UpstreamConnector {
 
     #[instrument(skip_all, fields(port = port), err)]
     pub(crate) async fn connect(&self, sni: &str, port: u16) -> Result<TcpStream, Error> {
+        let is_excluded = &ARGS.socks_exclude.iter().find(|exclude| sni.eq(*exclude));
+        if is_excluded.is_some() {
+            info!("Excluded from socks");
+            return self.upstream_direct(sni, port).await;
+        }
         let Some(socks) = &self.socks else {
             return self.upstream_direct(sni, port).await;
         };
@@ -277,6 +282,14 @@ impl RuntimeProvider for RuntimeProviderWithSocks {
         let Some(socks) = &self.socks else {
             return self.inner.connect_tcp(server_addr);
         };
+
+        let sni = server_addr.ip().to_string();
+        let is_excluded = &ARGS.socks_exclude.iter().find(|exclude| sni.eq(*exclude));
+        if is_excluded.is_some() {
+            info!("Excluded from socks");
+            return self.inner.connect_tcp(server_addr);
+        }
+
         let socks = socks.clone();
         Box::pin(async move {
             let target_addr = server_addr.to_target_addr()?;
