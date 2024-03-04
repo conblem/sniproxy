@@ -52,7 +52,7 @@ pub(crate) struct ShutdownReceiver {
 }
 
 impl ShutdownReceiver {
-    pub(crate) async fn wait(mut self) {
+    pub(crate) async fn wait(&mut self) {
         if let Err(err) = self.receiver.changed().await {
             error!("Error waiting for shutdown: {}", err);
         }

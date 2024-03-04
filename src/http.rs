@@ -2,7 +2,6 @@ use anyhow::{anyhow, Error, Result};
 use hyper::body::Incoming;
 use hyper::http::uri::Scheme;
 use hyper::rt::Executor;
-use hyper::server::conn::http1::Builder;
 use hyper::service::{service_fn, HttpService};
 use hyper::{Request, Response, Uri};
 use hyper_util::client::legacy::connect::Connect;
@@ -11,12 +10,11 @@ use hyper_util::rt::TokioIo;
 use once_cell::sync::Lazy;
 use prometheus::{register_int_gauge, IntGauge};
 use std::future::Future;
-use std::net::SocketAddr;
-use tokio::net::TcpListener;
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
 use tracing::{info_span, instrument, Instrument, Span};
 
+use crate::server::Server;
 use crate::shutdown::ShutdownReceiver;
 use crate::task::Task;
 use crate::util::FutureExt;
@@ -29,7 +27,7 @@ static HTTP_CONNECTION_COUNT: Lazy<IntGauge> =
 #[instrument(skip_all)]
 pub(crate) fn loop_http(
     upstream_connector: UpstreamConnector,
-    _shutdown: ShutdownReceiver,
+    shutdown: ShutdownReceiver,
 ) -> JoinHandle<Result<(), Error>> {
     let connector = connector_factory(upstream_connector.clone());
 
@@ -40,22 +38,8 @@ pub(crate) fn loop_http(
         .in_current_span()
         .spawn(async move {
             let addr = format!("{}:{}", ARGS.listen, ARGS.http_port);
-
-            let socket = TcpListener::bind(addr).await?;
-            while let Ok((stream, socket)) = socket.accept().await {
-                let service = service_factory(&client, socket);
-                // todo: fix spans
-                tokio::spawn(
-                    async move {
-                        Builder::new()
-                            .serve_connection(TokioIo::new(stream), service)
-                            // todo: figure out shutdown
-                            .await
-                    }
-                    .in_current_span(),
-                );
-            }
-            Ok(())
+            let service = service_factory(&client);
+            Server::new(service, shutdown).listen(addr).await
         })
         // todo: fix this
         .unwrap()
@@ -63,8 +47,7 @@ pub(crate) fn loop_http(
 
 fn service_factory<C>(
     client: &Client<C, Incoming>,
-    _socket: SocketAddr,
-) -> impl HttpService<Incoming, ResBody = Incoming, Future = impl Send>
+) -> impl HttpService<Incoming, ResBody = Incoming, Future = impl Send> + Clone
 where
     C: Connect + Clone + Send + Sync + 'static,
 {

@@ -8,6 +8,7 @@ use opentelemetry_sdk::{trace, Resource};
 use opentelemetry_semantic_conventions::resource::{SERVICE_NAME, SERVICE_VERSION};
 use std::convert::Infallible;
 use std::net::IpAddr;
+use std::pin::pin;
 use tokio::runtime::Runtime;
 use tracing::{info, info_span, Instrument, Level, Subscriber};
 use tracing_subscriber::filter::LevelFilter;
@@ -34,6 +35,7 @@ static GLOBAL: Jemalloc = Jemalloc;
 
 mod http;
 mod prom;
+mod server;
 mod shutdown;
 mod task;
 mod tls;
@@ -97,13 +99,28 @@ fn main() -> Result<()> {
             let upstream_connector = UpstreamConnector::new().await?;
 
             let https = loop_https(upstream_connector.clone(), shutdown.clone()).in_current_span();
+            let mut https = pin!(https);
             let http = loop_http(upstream_connector, shutdown.clone()).in_current_span();
+            let mut http = pin!(http);
             let prom = loop_prom(shutdown).in_current_span();
+            let mut prom = pin!(prom);
 
             tokio::select! {
-                res = https => res?,
-                res = http => res?,
-                res = prom => res?,
+                res = https.as_mut() => {
+                    http.as_mut().await??;
+                    prom.as_mut().await??;
+                    res?
+                },
+                res = http.as_mut() => {
+                    https.as_mut().await??;
+                    prom.as_mut().await??;
+                    res?
+                },
+                res = prom.as_mut() => {
+                    https.as_mut().await??;
+                    http.as_mut().await??;
+                    res?
+                },
             }
         }
         .in_current_span(),

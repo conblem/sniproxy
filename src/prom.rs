@@ -1,19 +1,17 @@
+use crate::server::Server;
 use crate::shutdown::ShutdownReceiver;
 use crate::task::Task;
 use anyhow::Result;
 use http_body_util::Full;
 use hyper::body::Incoming;
-use hyper::server::conn::http1::Builder;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response};
-use hyper_util::rt::TokioIo;
 use prometheus::{Encoder, TextEncoder};
 use std::convert::Infallible;
 use std::io::Cursor;
 use std::net::SocketAddr;
-use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
-use tracing::{instrument, Instrument};
+use tracing::instrument;
 
 async fn handle(req: Request<Incoming>) -> Result<Response<Full<Cursor<Vec<u8>>>>, Infallible> {
     if req.method() != Method::GET {
@@ -44,24 +42,10 @@ fn error_response(error: &'static str) -> Response<Full<Cursor<Vec<u8>>>> {
 }
 
 #[instrument(skip_all)]
-pub(crate) fn loop_prom(_shutdown: ShutdownReceiver) -> JoinHandle<Result<()>> {
+pub(crate) fn loop_prom(shutdown: ShutdownReceiver) -> JoinHandle<Result<()>> {
     let addr = SocketAddr::from(([127, 0, 0, 1], 9090));
 
     Task::new("loop_prom")
-        .spawn(async move {
-            let listener = TcpListener::bind(addr).await?;
-            while let Ok((stream, _)) = listener.accept().await {
-                tokio::spawn(
-                    async move {
-                        Builder::new()
-                            .serve_connection(TokioIo::new(stream), service_fn(handle))
-                            // todo: figure out shutdown
-                            .await
-                    }
-                    .in_current_span(),
-                );
-            }
-            Ok(())
-        })
+        .spawn(Server::new(service_fn(handle), shutdown).listen(addr))
         .unwrap()
 }
