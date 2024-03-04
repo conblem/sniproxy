@@ -15,7 +15,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::net::{lookup_host, TcpStream, UdpSocket};
-use tracing::instrument;
+use tracing::{info, instrument};
 use url::Url;
 
 use crate::ARGS;
@@ -56,6 +56,10 @@ impl UpstreamConnector {
 
     #[instrument(skip_all, fields(port = port), err)]
     pub(crate) async fn connect(&self, sni: &str, port: u16) -> Result<TcpStream, Error> {
+        if IsSocksExcluded::is_sni_excluded(sni) {
+            info!("Excluded from socks");
+            return self.upstream_direct(sni, port).await;
+        }
         let Some(socks) = &self.socks else {
             return self.upstream_direct(sni, port).await;
         };
@@ -277,6 +281,11 @@ impl RuntimeProvider for RuntimeProviderWithSocks {
         let Some(socks) = &self.socks else {
             return self.inner.connect_tcp(server_addr);
         };
+
+        if IsSocksExcluded::is_addr_excluded(&server_addr) {
+            return self.inner.connect_tcp(server_addr);
+        }
+
         let socks = socks.clone();
         Box::pin(async move {
             let target_addr = server_addr.to_target_addr()?;
@@ -296,5 +305,21 @@ impl RuntimeProvider for RuntimeProviderWithSocks {
             ErrorKind::Other,
             "UDP not supported",
         ))))
+    }
+}
+
+struct IsSocksExcluded;
+
+impl IsSocksExcluded {
+    fn is_sni_excluded(sni: &str) -> bool {
+        ARGS.socks_exclude
+            .iter()
+            .find(|exclude| sni.eq(*exclude))
+            .is_some()
+    }
+
+    fn is_addr_excluded(addr: &SocketAddr) -> bool {
+        let sni = addr.ip().to_string();
+        Self::is_sni_excluded(&sni)
     }
 }
