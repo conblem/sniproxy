@@ -2,18 +2,21 @@ use anyhow::{anyhow, Error, Result};
 use fast_socks5::client::{Config as FastSocksConfig, Socks5Stream};
 use fast_socks5::util::target_addr::{TargetAddr, ToTargetAddr};
 use fast_socks5::Socks5Command;
-use hickory_resolver::config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts};
-use hickory_resolver::name_server::{GenericConnector, RuntimeProvider, TokioRuntimeProvider};
-use hickory_resolver::proto::iocompat::AsyncIoTokioAsStd;
-use hickory_resolver::proto::TokioTime;
-use hickory_resolver::{AsyncResolver, TokioHandle};
+use hickory_resolver::config::{NameServerConfig, ResolverConfig};
+use hickory_resolver::name_server::{GenericConnector};
+use hickory_resolver::{Resolver};
 use lookup_result::{LookupResult, LookupResultWithPort};
 use std::fmt::Debug;
 use std::future::{ready, Future};
+use std::io;
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
+use hickory_resolver::proto::runtime::{RuntimeProvider, TokioHandle, TokioRuntimeProvider, TokioTime};
+use hickory_resolver::proto::runtime::iocompat::AsyncIoTokioAsStd;
+use hickory_resolver::proto::xfer::Protocol;
 use tokio::net::{lookup_host, TcpStream, UdpSocket};
 use tracing::{info, instrument};
 use url::Url;
@@ -72,7 +75,7 @@ impl UpstreamConnector {
                 .to_target_addr()?,
             SocksDnsResolution::Socks => (sni, port).to_target_addr()?,
         };
-        return socks.connect(target).await;
+        socks.connect(target).await
     }
 
     #[instrument(skip_all, err)]
@@ -167,11 +170,11 @@ impl DnsLookupMode {
     }
 }
 
-type CustomAsyncResolver = AsyncResolver<GenericConnector<RuntimeProviderWithSocks>>;
+type CustomResolver = Resolver<GenericConnector<RuntimeProviderWithSocks>>;
 
 #[derive(Clone)]
 struct UpstreamResolver {
-    resolver: Option<Arc<CustomAsyncResolver>>,
+    resolver: Option<Arc<CustomResolver>>,
     dns_lookup_mode: DnsLookupMode,
 }
 
@@ -197,7 +200,7 @@ impl UpstreamResolver {
     async fn create_resolver(
         dns: &str,
         runtime_provider: RuntimeProviderWithSocks,
-    ) -> Result<CustomAsyncResolver> {
+    ) -> Result<CustomResolver> {
         let dns_server = lookup_host(dns).await?.next();
         let Some(dns_server) = dns_server else {
             Err(anyhow!("No IP for DNS Server found"))?
@@ -208,11 +211,10 @@ impl UpstreamResolver {
         resolver_config.add_name_server(name_server_config);
 
         let connector = GenericConnector::new(runtime_provider);
-        Ok(AsyncResolver::new(
+        Ok(Resolver::<GenericConnector<RuntimeProviderWithSocks>>::builder_with_config(
             resolver_config,
-            ResolverOpts::default(),
             connector,
-        ))
+        ).build())
     }
 
     #[instrument(skip_all, ret, err)]
@@ -277,13 +279,15 @@ impl RuntimeProvider for RuntimeProviderWithSocks {
     fn connect_tcp(
         &self,
         server_addr: SocketAddr,
-    ) -> Pin<Box<dyn Send + Future<Output = std::io::Result<Self::Tcp>>>> {
+        bind_addr: Option<SocketAddr>,
+        wait_for: Option<Duration>,
+    ) -> Pin<Box<dyn Send + Future<Output = io::Result<Self::Tcp>>>> {
         let Some(socks) = &self.socks else {
-            return self.inner.connect_tcp(server_addr);
+            return self.inner.connect_tcp(server_addr, bind_addr, wait_for);
         };
 
         if IsSocksExcluded::is_addr_excluded(&server_addr) {
-            return self.inner.connect_tcp(server_addr);
+            return self.inner.connect_tcp(server_addr, bind_addr, wait_for);
         }
 
         let socks = socks.clone();
@@ -291,7 +295,7 @@ impl RuntimeProvider for RuntimeProviderWithSocks {
             let target_addr = server_addr.to_target_addr()?;
             match socks.connect(target_addr).await {
                 Ok(stream) => Ok(AsyncIoTokioAsStd(stream)),
-                Err(err) => Err(std::io::Error::new(ErrorKind::Other, err)),
+                Err(err) => Err(io::Error::new(ErrorKind::Other, err)),
             }
         })
     }
@@ -300,8 +304,8 @@ impl RuntimeProvider for RuntimeProviderWithSocks {
         &self,
         _local_addr: SocketAddr,
         _server_addr: SocketAddr,
-    ) -> Pin<Box<dyn Send + Future<Output = std::io::Result<Self::Udp>>>> {
-        Box::pin(ready(Err(std::io::Error::new(
+    ) -> Pin<Box<dyn Send + Future<Output = io::Result<Self::Udp>>>> {
+        Box::pin(ready(Err(io::Error::new(
             ErrorKind::Other,
             "UDP not supported",
         ))))

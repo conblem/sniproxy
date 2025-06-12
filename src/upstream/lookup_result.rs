@@ -2,8 +2,8 @@ use anyhow::Result;
 use fast_socks5::util::target_addr::{TargetAddr, ToTargetAddr};
 use hickory_resolver::lookup::{Ipv4Lookup, Ipv6Lookup};
 use hickory_resolver::lookup_ip::LookupIp;
-use rand::seq::SliceRandom;
-use rand::thread_rng;
+use rand::prelude::IndexedRandom;
+use rand::rng;
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
 use tokio::net::ToSocketAddrs;
@@ -106,7 +106,7 @@ impl LookupResultWithPort {
 impl ToTargetAddr for LookupResultWithPort {
     // choose a random address
     fn to_target_addr(&self) -> std::io::Result<TargetAddr> {
-        let addr = self.socket_addrs.choose(&mut thread_rng());
+        let addr = self.socket_addrs.choose(&mut rng());
         if let Some(addr) = addr {
             return Ok(TargetAddr::Ip(*addr));
         };

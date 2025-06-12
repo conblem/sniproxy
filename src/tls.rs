@@ -1,3 +1,4 @@
+use tls_parser::Err;
 use anyhow::{anyhow, bail, Result};
 use once_cell::sync::Lazy;
 use prometheus::{register_int_gauge, IntGauge};
@@ -7,6 +8,7 @@ use tls_parser::{
     parse_tls_client_hello_extensions, parse_tls_plaintext, TlsExtension, TlsMessage,
     TlsMessageHandshake,
 };
+use tls_parser::nom::Needed;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
@@ -54,16 +56,36 @@ async fn process_https(
     _peer: SocketAddr,
     upstream_connector: UpstreamConnector,
 ) -> Result<()> {
-    let mut buffer = [0u8; 1024];
-    let n = stream.read_buf(&mut buffer.as_mut()).await?;
-    let buffer = &buffer[..n];
+    let mut buffer = [0u8; 1024 * 10];
+    // try 10 times to read more data
+    let mut counter = 0;
+    let mut n = 0;
+    let extensions = loop {
+        counter += 1;
+        if counter >= 10 {
+            bail!("Failed to read TLS extensions after 10 attempts");
+        }
 
-    let extensions = parse_extensions(buffer)?;
+        n = n + stream.read_buf(&mut buffer[n..].as_mut()).await?;
+
+        if n > buffer.len() {
+            bail!("Read more bytes than buffer can hold, {}", n);
+        }
+
+        let needed = match parse_extensions(&buffer[..n])? {
+            ExtensionsOrMoreNeeded::Extensions(extensions) => break extensions,
+            ExtensionsOrMoreNeeded::MoreNeeded(needed) => needed,
+        };
+        info!("Read {} bytes, need more: {:?}", n, needed);
+    };
+
     let sni = parse_sni(extensions)?;
     Span::current().record("sni", display(sni));
 
     let mut upstream = upstream_connector.connect(sni, 443).await?;
-    upstream.write_all(buffer).await?;
+    upstream.write_all(&buffer[..n]).await?;
+
+    info!("Client Hello successfully sent {}", n);
 
     let res = copy_bidirectional(&mut stream, &mut upstream).await;
 
@@ -104,10 +126,17 @@ where
     tokio_splice::zero_copy_bidirectional(a, b).await
 }
 
+enum ExtensionsOrMoreNeeded<'a> {
+    Extensions(Vec<TlsExtension<'a>>),
+    MoreNeeded(Needed),
+}
+
 #[instrument(skip_all, err)]
-fn parse_extensions(buffer: &[u8]) -> Result<Vec<TlsExtension>> {
-    let Ok((_, plaintext)) = parse_tls_plaintext(buffer) else {
-        bail!("Failed to parse TLS plaintext");
+fn parse_extensions(buffer: &[u8]) -> Result<ExtensionsOrMoreNeeded> {
+    let plaintext = match parse_tls_plaintext(buffer) {
+        Ok((_, plaintext)) => plaintext,
+        Err(Err::Incomplete(needed)) => return Ok(ExtensionsOrMoreNeeded::MoreNeeded(needed)),
+        Err(err) => bail!("Failed to parse TLS plaintext, {}", err),
     };
     let Some(TlsMessage::Handshake(handshake)) = plaintext.msg.first() else {
         bail!("No TLS handshake found");
@@ -120,8 +149,8 @@ fn parse_extensions(buffer: &[u8]) -> Result<Vec<TlsExtension>> {
     };
 
     parse_tls_client_hello_extensions(extensions)
-        .map(|(_, extensions)| extensions)
-        .map_err(|_| anyhow!("Failed to parse TLS extensions"))
+        .map(|(_, extensions)| ExtensionsOrMoreNeeded::Extensions(extensions))
+        .map_err(|err| anyhow!("Failed to parse TLS extensions, {}", err))
 }
 
 #[instrument(skip_all, err)]
